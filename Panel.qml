@@ -9,10 +9,13 @@ import "Model.js" as Model
 // corner, modelled on Unsplash's own menu bar app.
 //
 // Three panes:
-//   Home         the wallpaper in use, with a refresh that draws one new
-//                random photo from the selected collections
+//   Home         a photo on show — click it to draw another, Set to apply it
 //   Collections  browse/search collections and choose which ones feed Home
-//   History      previously applied wallpapers; click to put one back
+//   History      every photo shown so far; click one to bring it back
+//
+// Drawing and applying are deliberately separate: the hero holds a candidate
+// that only becomes the wallpaper when Set is pressed, so cycling through
+// photos never touches the desktop.
 //
 // The widget itself is the popup owner (the tailscale/agents pattern): one
 // QML file holds both the bar button and the KeyboardPanel it anchors, so the
@@ -32,7 +35,6 @@ Panel {
   readonly property string accessKey: String(config.accessKey || "")
   readonly property bool configured: accessKey.length > 0
   readonly property string orientation: String(config.orientation || "landscape")
-  readonly property int rotateMinutes: parseInt(config.rotateMinutes, 10) || 0
   readonly property var selectedCollections: config.collections instanceof Array ? config.collections : []
 
   readonly property int columns: Math.max(2, parseInt(setting("columns", 3), 10) || 3)
@@ -45,7 +47,16 @@ Panel {
   property bool setupOpen: false
 
   // -------------------------------------------------------------- pane data
+  //
+  // `previewPhoto` is the candidate on show in Home. It is null until the
+  // user draws one, so opening the panel starts on the wallpaper in use.
+  property var previewPhoto: null
   property var appliedPhoto: null
+  readonly property var heroPhoto: previewPhoto || appliedPhoto
+  readonly property bool heroIsApplied: !!heroPhoto && appliedId !== ""
+    && String(heroPhoto.id) === appliedId
+  readonly property bool canSet: !!heroPhoto && !heroIsApplied && !applying && !drawing
+
   property var history: []
   property var collections: []
   property string collectionQuery: ""
@@ -53,9 +64,10 @@ Panel {
   readonly property int collectionsTtlMs: 30 * 60 * 1000
 
   // ------------------------------------------------------------- status
-  // `busy` covers the whole New-photo path: the random request and the
-  // download that follows it are one action from the user's point of view.
-  property bool busy: false
+  // Drawing a photo and applying one are separate actions now, so they get
+  // separate flags: the hero spins while drawing, and dims while applying.
+  property bool drawing: false
+  property bool applying: false
   property bool loadingCollections: false
   property string errorText: ""
 
@@ -121,11 +133,12 @@ Panel {
 
   // ------------------------------------------------------------- new photo
   //
-  // One request per photo change, exactly like the app this mirrors: ask the
-  // random endpoint for a single photo drawn from the selected collections.
+  // One request per draw: ask the random endpoint for a single photo from the
+  // selected collections. The result only goes on show — applying it is a
+  // separate, explicit step.
   function newPhoto() {
-    if (!configured || busy) return
-    busy = true
+    if (!configured || drawing) return
+    drawing = true
     errorText = ""
     randomProc.command = ["curl", "-sS", "--max-time", "15",
       "-H", "Authorization: Client-ID " + accessKey,
@@ -134,9 +147,40 @@ Panel {
     randomProc.running = true
   }
 
+  // Every photo shown is logged, applied or not, so History is a record of
+  // everything seen rather than only what made it to the desktop.
+  function recordShown(photo) {
+    if (!photo) return
+    historyProc.command = [pluginBin("uw-history"), "add",
+      "--id", String(photo.id),
+      "--author", String(photo.authorName || ""),
+      "--username", String(photo.authorUsername || ""),
+      "--link", String(photo.htmlLink || ""),
+      "--preview", String(photo.previewUrl || ""),
+      "--raw", String(photo.rawUrl || ""),
+      "--max", String(parseInt(config.historyMax, 10) || 200)]
+    historyProc.running = true
+  }
+
+  // Put the photo on show in Home without touching the wallpaper.
+  function showPhoto(photo) {
+    if (!photo) return
+    previewPhoto = photo
+    pane = "home"
+  }
+
+  // History is a one-click path back to a photo: apply it and get out of the
+  // way. The hero follows along so reopening the panel shows what was set.
+  function applyFromHistory(photo) {
+    if (!photo) return
+    previewPhoto = photo
+    applyPhoto(photo)
+    close()
+  }
+
   function applyPhoto(photo) {
     if (!photo || !photo.rawUrl) return
-    busy = true
+    applying = true
     setProc.command = [pluginBin("uw-set-wallpaper"),
       "--id", String(photo.id),
       "--url", Model.wallpaperUrl(photo.rawUrl, targetWidth),
@@ -188,12 +232,6 @@ Panel {
   }
 
   // -------------------------------------------------------------- settings
-  function cycleRotation() {
-    var next = Model.nextRotateMinutes(rotateMinutes)
-    config = Object.assign({}, config, { rotateMinutes: next })
-    saveConfig("rotateMinutes", next)
-  }
-
   function cycleOrientation() {
     var order = ["landscape", "portrait", "squarish"]
     var next = order[(order.indexOf(orientation) + 1) % order.length]
@@ -225,11 +263,12 @@ Panel {
 
   function activateCursor() {
     if (pane === "history" && history.length > 0) {
-      applyPhoto(history[Math.max(0, Math.min(historyIndex, history.length - 1))])
+      applyFromHistory(history[Math.max(0, Math.min(historyIndex, history.length - 1))])
     } else if (pane === "collections" && collections.length > 0) {
       toggleCollection(collections[Math.max(0, Math.min(collectionIndex, collections.length - 1))])
     } else if (pane === "home") {
-      newPhoto()
+      // Enter applies what is on show; `n` draws another.
+      if (heroPhoto && !heroIsApplied) applyPhoto(heroPhoto)
     }
   }
 
@@ -271,28 +310,27 @@ Panel {
       waitForEnd: true
       onStreamFinished: {
         var response = Model.parseHttp(text)
+        root.drawing = false
+
         if (response.status !== 200) {
-          root.busy = false
           root.errorText = Model.randomErrorFor(response.status, response.body,
             root.selectedCollections.length > 0)
           return
         }
         var photos = Model.normalizePhotos(response.body)
         if (photos.length === 0) {
-          root.busy = false
           root.errorText = "Unsplash returned no photo. Try again."
           return
         }
-        // busy stays set: applyPhoto continues the same user action.
-        root.applyPhoto(photos[0])
+
+        root.previewPhoto = photos[0]
+        root.recordShown(photos[0])
       }
     }
     onExited: function(exitCode) {
+      root.drawing = false
       // curl itself failed, so the collector never saw a status line.
-      if (exitCode !== 0 && !setProc.running) {
-        root.busy = false
-        if (root.errorText === "") root.errorText = Model.errorFor(0, "")
-      }
+      if (exitCode !== 0 && root.errorText === "") root.errorText = Model.errorFor(0, "")
     }
   }
 
@@ -322,20 +360,13 @@ Panel {
   Process {
     id: setProc
     onExited: function(exitCode) {
-      root.busy = false
+      root.applying = false
       if (exitCode !== 0) root.errorText = "Could not apply that wallpaper."
     }
   }
 
   Process { id: configProc }
-
-  Timer {
-    id: rotateTimer
-    interval: Math.max(1, root.rotateMinutes) * 60 * 1000
-    running: root.rotateMinutes > 0
-    repeat: true
-    onTriggered: root.newPhoto()
-  }
+  Process { id: historyProc }
 
   IpcHandler {
     target: root.ipcTarget
@@ -347,6 +378,11 @@ Panel {
     function toggle(): void { root.toggle() }
     function next(): string { root.newPhoto(); return "ok" }
     function shuffle(): string { root.newPhoto(); return "ok" }
+    function set(): string {
+      if (!root.heroPhoto) return "nothing on show"
+      root.applyPhoto(root.heroPhoto)
+      return "ok"
+    }
 
     // Open the panel straight onto one pane, so a keybinding can jump to
     // History or Collections without clicking through Home.
@@ -369,8 +405,15 @@ Panel {
     tooltipText: root.opened ? "" : "Unsplash wallpapers"
 
     onPressed: function(buttonCode) {
-      if (buttonCode === Qt.RightButton) root.newPhoto()
-      else root.toggle()
+      // Right-click draws a photo and opens the panel to show it. It must
+      // not apply anything: the wallpaper only ever changes via Set.
+      if (buttonCode === Qt.RightButton) {
+        root.pane = "home"
+        root.open()
+        root.newPhoto()
+      } else {
+        root.toggle()
+      }
     }
   }
 
@@ -468,14 +511,14 @@ Panel {
 
               Text {
                 anchors.verticalCenter: parent.verticalCenter
-                visible: root.busy || root.loadingCollections
+                visible: root.drawing || root.applying || root.loadingCollections
                 text: "󰦖"
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
 
                 RotationAnimator on rotation {
-                  running: root.busy || root.loadingCollections
+                  running: root.drawing || root.applying || root.loadingCollections
                   from: 0
                   to: 360
                   duration: 900
@@ -619,8 +662,8 @@ Panel {
             visible: root.configured && !root.setupOpen && root.pane === "home"
             spacing: Style.spacing.lg
 
-            // The wallpaper currently on screen, big. Clicking opens it on
-            // Unsplash — the same affordance as the credit line.
+            // The photo on show — the wallpaper in use until a new one is
+            // drawn. Clicking anywhere on it draws another.
             Rectangle {
               id: hero
               width: parent.width
@@ -633,7 +676,7 @@ Panel {
               Image {
                 id: heroImage
                 anchors.fill: parent
-                source: Model.heroSource(root.appliedPhoto)
+                source: Model.heroSource(root.heroPhoto)
                 fillMode: Image.PreserveAspectCrop
                 asynchronous: true
                 cache: true
@@ -648,7 +691,7 @@ Panel {
                 // it; fall back to the CDN preview rather than showing a hole.
                 onStatusChanged: {
                   if (status !== Image.Error || hero.fellBack) return
-                  var preview = root.appliedPhoto ? String(root.appliedPhoto.previewUrl || "") : ""
+                  var preview = root.heroPhoto ? String(root.heroPhoto.previewUrl || "") : ""
                   if (preview === "") return
                   hero.fellBack = true
                   source = preview
@@ -657,14 +700,14 @@ Panel {
 
               Connections {
                 target: root
-                function onAppliedPhotoChanged() { hero.fellBack = false }
+                function onHeroPhotoChanged() { hero.fellBack = false }
               }
 
               Text {
                 anchors.centerIn: parent
                 width: parent.width - Style.space(40)
-                visible: !root.appliedPhoto && !root.busy
-                text: "No wallpaper set yet.\nHit New photo to pull one from Unsplash."
+                visible: !root.heroPhoto && !root.drawing
+                text: "Nothing on show yet.\nClick here to pull a photo from Unsplash."
                 color: root.faint
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
@@ -672,20 +715,65 @@ Panel {
                 wrapMode: Text.WordWrap
               }
 
+              // Marks the photo already on the desktop, so it is obvious
+              // whether the hero is the wallpaper or a candidate for it.
               Rectangle {
-                anchors.fill: parent
-                visible: root.busy
-                color: Qt.rgba(0, 0, 0, 0.5)
+                visible: root.heroIsApplied && !!root.heroPhoto
+                anchors.top: parent.top
+                anchors.right: parent.right
+                anchors.margins: Style.spacing.sm
+                width: currentLabel.implicitWidth + Style.spacing.lg
+                height: currentLabel.implicitHeight + Style.spacing.sm
+                color: Qt.rgba(0, 0, 0, 0.55)
 
                 Text {
+                  id: currentLabel
                   anchors.centerIn: parent
-                  text: "󰦖"
+                  text: "CURRENT"
                   color: "white"
                   font.family: root.fontFamily
-                  font.pixelSize: Style.font.heading
+                  font.pixelSize: Style.font.caption
+                  font.letterSpacing: 1
+                }
+              }
+
+              // Dim the photo while it is being downloaded and applied.
+              Rectangle {
+                anchors.fill: parent
+                visible: root.applying
+                color: Qt.rgba(0, 0, 0, 0.5)
+              }
+
+              // The draw-another affordance: a circular arrow over the middle
+              // of the image. The whole image is the click target; this just
+              // makes that discoverable.
+              Rectangle {
+                id: refreshBadge
+                anchors.centerIn: parent
+                width: Style.space(58)
+                height: width
+                radius: width / 2
+                color: Qt.rgba(0, 0, 0, heroMouse.containsMouse ? 0.62 : 0.42)
+                opacity: root.applying ? 0 : 1
+
+                Behavior on color { ColorAnimation { duration: 120 } }
+                Behavior on opacity { NumberAnimation { duration: 120 } }
+
+                scale: heroMouse.containsMouse ? 1.06 : 1.0
+                Behavior on scale {
+                  NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
+                }
+
+                Text {
+                  id: refreshGlyph
+                  anchors.centerIn: parent
+                  text: "󰑐"
+                  color: "white"
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.display
 
                   RotationAnimator on rotation {
-                    running: root.busy
+                    running: root.drawing
                     from: 0
                     to: 360
                     duration: 900
@@ -695,11 +783,12 @@ Panel {
               }
 
               MouseArea {
+                id: heroMouse
                 anchors.fill: parent
-                enabled: !!root.appliedPhoto
+                enabled: !root.drawing && !root.applying
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
-                onClicked: root.openUrl(root.appliedPhoto ? root.appliedPhoto.htmlLink : "")
+                onClicked: root.newPhoto()
               }
             }
 
@@ -707,10 +796,10 @@ Panel {
             Row {
               width: parent.width
               spacing: Style.spacing.sm
-              visible: !!root.appliedPhoto
+              visible: !!root.heroPhoto
 
               TapHandler {
-                onTapped: root.openUrl(root.appliedPhoto ? root.appliedPhoto.htmlLink : "")
+                onTapped: root.openUrl(root.heroPhoto ? root.heroPhoto.htmlLink : "")
               }
               HoverHandler {
                 cursorShape: Qt.PointingHandCursor
@@ -727,7 +816,7 @@ Panel {
               Text {
                 anchors.verticalCenter: parent.verticalCenter
                 width: parent.width - Style.space(24)
-                text: Model.attributionText(root.appliedPhoto)
+                text: Model.attributionText(root.heroPhoto)
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
@@ -740,31 +829,23 @@ Panel {
               spacing: Style.spacing.sm
 
               Button {
-                text: "󰑐  New photo"
-                tooltipText: "Draw a new random photo from " + Model.selectionSummary(root.selectedCollections) + "  (n)"
+                text: "Set as wallpaper"
+                tooltipText: root.heroIsApplied
+                  ? "Already your wallpaper"
+                  : "Put this photo on the desktop  (Enter)"
                 bordered: true
-                enabled: !root.busy
-                foreground: root.foreground
+                enabled: root.canSet
+                // Button has no disabled paint of its own, so dim the label
+                // to keep "already your wallpaper" from looking clickable.
+                foreground: root.canSet ? root.foreground : root.faint
                 fontFamily: root.fontFamily
                 fontSize: Style.font.caption
                 verticalPadding: Style.spacing.md
-                onClicked: root.newPhoto()
+                onClicked: root.applyPhoto(root.heroPhoto)
               }
 
               Button {
-                text: "Auto: " + Model.rotateLabel(root.rotateMinutes)
-                tooltipText: "How often a new photo is drawn automatically"
-                bordered: true
-                selected: root.rotateMinutes > 0
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                fontSize: Style.font.caption
-                verticalPadding: Style.spacing.md
-                onClicked: root.cycleRotation()
-              }
-
-              Button {
-                visible: !!root.appliedPhoto
+                visible: !!root.heroPhoto
                 text: "Open ↗"
                 tooltipText: "Open this photo on unsplash.com  (o)"
                 bordered: true
@@ -772,7 +853,7 @@ Panel {
                 fontFamily: root.fontFamily
                 fontSize: Style.font.caption
                 verticalPadding: Style.spacing.md
-                onClicked: root.openUrl(root.appliedPhoto ? root.appliedPhoto.htmlLink : "")
+                onClicked: root.openUrl(root.heroPhoto ? root.heroPhoto.htmlLink : "")
               }
             }
           }
@@ -1014,7 +1095,7 @@ Panel {
 
             Text {
               width: parent.width
-              text: "Wallpapers you have used. Click one to put it back."
+              text: "Every photo shown so far. Click one to set it as your wallpaper."
               color: root.faint
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -1081,7 +1162,7 @@ Panel {
 
                     Text {
                       anchors.centerIn: parent
-                      text: historyCell.isApplied ? "Current" : "Set again"
+                      text: historyCell.isApplied ? "Current" : "Set"
                       color: "white"
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
@@ -1126,7 +1207,7 @@ Panel {
                     }
                     onClicked: function(mouse) {
                       if (mouse.button === Qt.RightButton) root.openUrl(historyCell.modelData.htmlLink)
-                      else root.applyPhoto(historyCell.modelData)
+                      else root.applyFromHistory(historyCell.modelData)
                     }
                   }
                 }

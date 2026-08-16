@@ -99,7 +99,6 @@ fi
 # a restart and other scripts can read it.
 settings_dir="$HOME/.local/state/omarchy/settings"
 state_file="$settings_dir/unsplash-current.json"
-history_file="$settings_dir/unsplash-history.json"
 mkdir -p "$settings_dir"
 
 entry="$(jq -n \
@@ -116,18 +115,11 @@ entry="$(jq -n \
 
 printf '%s\n' "$entry" >"$state_file"
 
-# Prepend to the history, de-duplicating by photo id so re-applying an old
-# wallpaper moves it back to the front instead of adding a second row. A
-# corrupt or missing history starts over rather than failing the whole run,
-# which has already put the wallpaper on screen by this point.
-history_tmp="$(mktemp "${history_file}.XXXXXX")"
-if [[ -s $history_file ]] && jq -e 'type == "array"' "$history_file" >/dev/null 2>&1; then
-  jq --argjson e "$entry" \
-    '[$e] + (map(select(.id != $e.id))) | .[0:60]' "$history_file" >"$history_tmp"
-else
-  jq -n --argjson e "$entry" '[$e]' >"$history_tmp"
-fi
-mv "$history_tmp" "$history_file"
+# History is written when a photo is *shown* (uw-history add, called by the
+# panel), not when it is applied. All that is needed here is to point the
+# existing entry at the file now on disk so its thumbnail loads locally; an
+# entry may legitimately be absent when a wallpaper is applied by a script.
+"$(dirname "${BASH_SOURCE[0]}")/uw-history" setpath --id "$id" --path "$dest" 2>/dev/null || true
 
 # Keep the newest N downloads and drop older ones. Only files this script
 # created (unsplash-*.jpg in this theme's user background dir) are considered,

@@ -1,0 +1,96 @@
+#!/bin/bash
+# Maintain the record of every Unsplash photo the panel has shown.
+#
+# The panel calls `add` each time it draws a new photo — whether or not it is
+# ever applied — so History is a log of everything seen, newest first.
+# uw-set-wallpaper calls `setpath` afterwards so an entry whose image is on
+# disk renders its thumbnail from the local file instead of the CDN.
+#
+#   uw-history add --id <id> [--author N] [--username U] [--link URL]
+#                  [--preview URL] [--raw URL] [--max N]
+#   uw-history setpath --id <id> --path <file>
+
+set -euo pipefail
+
+HISTORY="$HOME/.local/state/omarchy/settings/unsplash-history.json"
+
+id=""
+author=""
+username=""
+link=""
+preview=""
+raw_url=""
+path=""
+max="200"
+
+action="${1:-}"
+[[ -n $action ]] || { echo "usage: uw-history add|setpath ..." >&2; exit 1; }
+shift || true
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+  --id) id="${2-}"; shift 2 ;;
+  --author) author="${2-}"; shift 2 ;;
+  --username) username="${2-}"; shift 2 ;;
+  --link) link="${2-}"; shift 2 ;;
+  --preview) preview="${2-}"; shift 2 ;;
+  --raw) raw_url="${2-}"; shift 2 ;;
+  --path) path="${2-}"; shift 2 ;;
+  --max) max="${2-}"; shift 2 ;;
+  *)
+    echo "unknown argument: $1" >&2
+    exit 1
+    ;;
+  esac
+done
+
+[[ -n $id ]] || { echo "--id is required" >&2; exit 1; }
+[[ $max =~ ^[0-9]+$ ]] || max=200
+
+mkdir -p "$(dirname "$HISTORY")"
+
+# A missing or corrupt history starts over rather than aborting: this runs
+# after the user-visible action has already happened.
+current='[]'
+if [[ -s $HISTORY ]] && jq -e 'type == "array"' "$HISTORY" >/dev/null 2>&1; then
+  current="$(cat "$HISTORY")"
+fi
+
+tmp="$(mktemp "${HISTORY}.XXXXXX")"
+
+case "$action" in
+add)
+  entry="$(jq -n \
+    --arg id "$id" \
+    --arg author "$author" \
+    --arg username "$username" \
+    --arg link "$link" \
+    --arg preview "$preview" \
+    --arg raw "$raw_url" \
+    --arg shownAt "$(date -Iseconds)" \
+    '{id: $id, author: $author, username: $username, link: $link,
+      preview: $preview, raw: $raw, path: "", appliedAt: $shownAt}')"
+
+  # Re-showing a photo moves it back to the front and keeps the local path
+  # already recorded for it, so its thumbnail does not fall back to the CDN.
+  jq --argjson e "$entry" --argjson max "$max" '
+    (map(select(.id == $e.id)) | first) as $old
+    | [$e + {path: (($old.path // ""))}] + map(select(.id != $e.id))
+    | .[0:$max]
+  ' <<<"$current" >"$tmp"
+  ;;
+
+setpath)
+  [[ -n $path ]] || { echo "--path is required" >&2; exit 1; }
+  jq --arg id "$id" --arg path "$path" \
+    'map(if .id == $id then .path = $path else . end)' <<<"$current" >"$tmp"
+  ;;
+
+*)
+  rm -f "$tmp"
+  echo "usage: uw-history add|setpath ..." >&2
+  exit 1
+  ;;
+esac
+
+mv "$tmp" "$HISTORY"

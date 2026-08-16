@@ -188,42 +188,16 @@ function heroSource(photo) {
   return String(photo.previewUrl || "")
 }
 
-// ------------------------------------------------------------------ rotation
-
-function rotateOptions() {
-  return [
-    { minutes: 0, label: "Off" },
-    { minutes: 15, label: "15m" },
-    { minutes: 60, label: "1h" },
-    { minutes: 360, label: "6h" },
-    { minutes: 1440, label: "Daily" }
-  ]
-}
-
-function rotateLabel(minutes) {
-  var options = rotateOptions()
-  var m = parseInt(minutes, 10) || 0
-  for (var i = 0; i < options.length; i++) if (options[i].minutes === m) return options[i].label
-  return m + "m"
-}
-
-function nextRotateMinutes(minutes) {
-  var options = rotateOptions()
-  var m = parseInt(minutes, 10) || 0
-  for (var i = 0; i < options.length; i++) {
-    if (options[i].minutes === m) return options[(i + 1) % options.length].minutes
-  }
-  return 0
-}
-
 // -------------------------------------------------------------------- config
 
 function defaultConfig() {
   return {
     accessKey: "",
     orientation: "landscape",
-    rotateMinutes: 0,
     keep: 10,
+    // History records every photo shown, not just the ones applied, so it
+    // needs a ceiling — the panel renders the whole list.
+    historyMax: 200,
     // [{ id, title }] — the title is stored alongside the id so the selected
     // list stays readable without re-fetching every collection it names.
     collections: []
@@ -242,10 +216,10 @@ function parseConfig(raw) {
 
   if (typeof data.accessKey === "string") config.accessKey = data.accessKey.replace(/^\s+|\s+$/g, "")
   if (typeof data.orientation === "string") config.orientation = data.orientation
-  var rotate = parseInt(data.rotateMinutes, 10)
-  if (isFinite(rotate) && rotate >= 0) config.rotateMinutes = rotate
   var keep = parseInt(data.keep, 10)
   if (isFinite(keep) && keep >= 0) config.keep = keep
+  var historyMax = parseInt(data.historyMax, 10)
+  if (isFinite(historyMax) && historyMax > 0) config.historyMax = historyMax
 
   if (data.collections instanceof Array) {
     var selected = []
