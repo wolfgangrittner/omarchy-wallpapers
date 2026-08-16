@@ -85,6 +85,13 @@ Panel {
   property string collectionQuery: ""
   property double collectionsFetchedAt: 0
   readonly property int collectionsTtlMs: 30 * 60 * 1000
+  // Results dropped for having too few fetchable photos, so the pane can say
+  // so rather than looking like the search simply failed.
+  property int collectionsHidden: 0
+  readonly property int minPhotos: {
+    var n = parseInt(config.minPhotos, 10)
+    return isFinite(n) && n >= 0 ? n : 10
+  }
 
   // The Collections pane is one keyboard list spanning both sections: the
   // curated grid first, then the browsable collections.
@@ -416,10 +423,14 @@ Panel {
           root.errorText = Model.errorFor(response.status, response.body)
           return
         }
-        root.collections = Model.normalizeCollections(response.body)
+        root.collections = Model.normalizeCollections(response.body, root.minPhotos)
+        root.collectionsHidden = Model.normalizeCollections(response.body, 0).length
+          - root.collections.length
         root.collectionIndex = 0
         root.collectionsFetchedAt = Date.now()
-        if (root.collections.length === 0) root.errorText = "No collections matched that search."
+        if (root.collections.length === 0 && root.collectionsHidden === 0) {
+          root.errorText = "No collections matched that search."
+        }
       }
     }
     onExited: function(exitCode) {
@@ -1223,12 +1234,20 @@ Panel {
 
             Text {
               width: parent.width
-              visible: root.collections.length === 0 && !root.loadingCollections
-              text: "No collections loaded."
+              visible: !root.loadingCollections
+                && (root.collections.length === 0 || root.collectionsHidden > 0)
+              text: {
+                if (root.collectionsHidden === 0) return "No collections loaded."
+                var hidden = root.collectionsHidden + (root.collectionsHidden === 1
+                  ? " collection hidden" : " collections hidden")
+                return hidden + " — fewer than " + root.minPhotos
+                  + " usable photos, or Unsplash+ only."
+              }
               color: root.faint
               font.family: root.fontFamily
-              font.pixelSize: Style.font.bodySmall
+              font.pixelSize: Style.font.caption
               font.italic: true
+              wrapMode: Text.WordWrap
             }
           }
 

@@ -163,7 +163,11 @@ function normalizePhotos(body) {
   return out
 }
 
-function normalizeCollections(body) {
+// `minPhotos` drops collections with too few photos a free key can fetch.
+// Unsplash+ collections fall out of this naturally: their usable count is 0,
+// and /photos/random answers 404 for them, so they are never worth offering.
+function normalizeCollections(body, minPhotos) {
+  var floor = Math.max(0, parseInt(minPhotos, 10) || 0)
   var data
   try {
     data = JSON.parse(String(body || ""))
@@ -179,15 +183,18 @@ function normalizeCollections(body) {
   for (var i = 0; i < list.length; i++) {
     var c = list[i]
     if (!c || !c.id) continue
+    // Only photos a free key can fetch: an Unsplash+ collection reports a
+    // big total_photos but /photos/random returns 404 for it.
+    var free = Math.max(0, (parseInt(c.total_photos, 10) || 0) - (parseInt(c.total_plus, 10) || 0))
+    if (free < floor) continue
+
     out.push({
       // Collection ids are not always numeric ("WV3nU0MXUMw"), so they stay
       // strings everywhere — including in the saved config.
       id: String(c.id),
       title: String(c.title || "Untitled"),
       description: String(c.description || ""),
-      // Only photos a free key can fetch: an Unsplash+ collection reports a
-      // big total_photos but /photos/random returns 404 for it.
-      totalPhotos: Math.max(0, (parseInt(c.total_photos, 10) || 0) - (parseInt(c.total_plus, 10) || 0)),
+      totalPhotos: free,
       coverUrl: (c.cover_photo && c.cover_photo.urls) ? String(c.cover_photo.urls.small || "") : "",
       coverColor: (c.cover_photo && c.cover_photo.color) ? String(c.cover_photo.color) : "#1b1b1b",
       curator: (c.user && c.user.name) ? String(c.user.name) : ""
@@ -282,6 +289,10 @@ function defaultConfig() {
     // History records every photo shown, not just the ones applied, so it
     // needs a ceiling — the panel renders the whole list.
     historyMax: 200,
+    // Collections offering fewer than this many fetchable photos are not
+    // worth showing: too thin to rotate through, and Unsplash+ ones cannot
+    // be fetched at all.
+    minPhotos: 10,
     // Resolved curated grid, discovered on first run by bin/uw-curated.
     curated: [],
     // [{ id, title }] — the title is stored alongside the id so the selected
@@ -306,6 +317,8 @@ function parseConfig(raw) {
   if (isFinite(keep) && keep >= 0) config.keep = keep
   var historyMax = parseInt(data.historyMax, 10)
   if (isFinite(historyMax) && historyMax > 0) config.historyMax = historyMax
+  var minPhotos = parseInt(data.minPhotos, 10)
+  if (isFinite(minPhotos) && minPhotos >= 0) config.minPhotos = minPhotos
 
   config.collections = parseSelectionList(data.collections, config.collections)
   config.curated = labelCurated(data.curated)

@@ -70,6 +70,7 @@ Uninstall: `omarchy plugin remove wr.unsplash-wallpapers`
 | `orientation` | `landscape` | `landscape`, `portrait`, `squarish` (also a button in ⚙) |
 | `keep` | `10` | Downloaded wallpapers to keep |
 | `historyMax` | `200` | History entries to keep |
+| `minPhotos` | `10` | Hide collections offering fewer usable photos than this |
 | `curated` | discovered | The six grid collections. Resolved on first run, cached here. Rebuild from ⚙. |
 | `collections` | Wallpapers | Which collections photos are drawn from |
 
@@ -78,9 +79,17 @@ Uninstall: `omarchy plugin remove wr.unsplash-wallpapers`
 Collection ids are never hardcoded. On first run `bin/uw-curated` searches
 Unsplash for each of the six names and keeps the **largest match**, counted in
 photos a free API key can actually fetch — `total_photos` minus `total_plus`.
-That last part matters: the biggest "wallpapers" collection is Unsplash+
-premium, and `/photos/random` answers 404 for it. Results are cached in
-`curated`; **Rebuild curated** in ⚙ re-runs the lookup.
+
+That last part matters: the biggest "wallpapers" collection is entirely
+Unsplash+ premium, and `/photos/random` answers 404 for it, so ranking on the
+raw count picks a collection that silently returns nothing. It prefers
+collections with at least 50 usable photos, falling back to the largest usable
+one so a thin search term still yields a tile. Results are cached in `curated`;
+**Rebuild curated** in ⚙ re-runs the lookup.
+
+The same count drives the browse list: collections with fewer than `minPhotos`
+fetchable photos are hidden, which removes Unsplash+ collections (0 usable) and
+near-empty ones in a single rule. The pane says how many it hid.
 
 Config lives in `~/.local/state/omarchy/settings/unsplash.json` (mode 0600) —
 outside `~/.config` so the access key stays out of dotfiles repos.

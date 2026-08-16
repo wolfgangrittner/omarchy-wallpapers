@@ -6,7 +6,10 @@
 # and cached in the config, so the grid follows Unsplash rather than a list
 # that silently rots.
 #
-#   uw-curated --key <access-key> [term...]
+#   uw-curated --key <access-key> [--min N] [term...]
+#
+# --min is the preferred floor of fetchable photos (default 50); if nothing
+# clears it, the largest usable match is taken anyway.
 #
 # Prints: [{ term, id, title, totalPhotos, coverUrl, coverColor, curator }, …]
 # A term that matches nothing is skipped rather than failing the whole run.
@@ -14,14 +17,18 @@
 set -euo pipefail
 
 key=""
+min="50"
 terms=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
   --key) key="${2-}"; shift 2 ;;
+  --min) min="${2-}"; shift 2 ;;
   *) terms+=("$1"); shift ;;
   esac
 done
+
+[[ $min =~ ^[0-9]+$ ]] || min=50
 
 [[ -n $key ]] || { echo "uw-curated: --key is required" >&2; exit 1; }
 if [[ ${#terms[@]} -eq 0 ]]; then
@@ -46,11 +53,15 @@ for term in "${terms[@]}"; do
   #
   # Collections without a cover photo are skipped too: the grid is all
   # thumbnails, so an entry that cannot render is worse than one fewer.
-  entry="$(jq -c --arg term "$term" '
-    (.results // [])
-    | map(select(.id != null and .cover_photo.urls.small != null))
-    | map({ c: ., free: ((.total_photos // 0) - (.total_plus // 0)) })
-    | map(select(.free > 0))
+  # Prefer a collection with a real body of photos; fall back to the best of
+  # whatever is usable so a thin search term still yields a tile.
+  entry="$(jq -c --arg term "$term" --argjson min "$min" '
+    ((.results // [])
+      | map(select(.id != null and .cover_photo.urls.small != null))
+      | map({ c: ., free: ((.total_photos // 0) - (.total_plus // 0)) })
+      | map(select(.free > 0))) as $usable
+    | ([$usable[] | select(.free >= $min)]) as $good
+    | (if ($good | length) > 0 then $good else $usable end)
     | sort_by(-.free)
     | .[0] // empty
     | {
