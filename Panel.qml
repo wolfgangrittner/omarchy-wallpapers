@@ -5,8 +5,13 @@ import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 
-// Unsplash Wallpapers — a bar widget that puts Unsplash in the top-right
-// corner, modelled on Unsplash's own menu bar app.
+// Omarchy Wallpapers — a bar widget that puts a photo browser in the top-right
+// corner, modelled on the shape of Unsplash's own menu bar app.
+//
+// Named "Omarchy Wallpapers", not "Unsplash …": the Unsplash API guidelines
+// forbid using their name in an application name or their logo as an app
+// icon. Crediting them (and the photographer) is required and is done in the
+// Home pane's byline.
 //
 // Three panes:
 //   Home         a photo on show — click it to draw another, Set to apply it
@@ -23,7 +28,7 @@ import "Model.js" as Model
 Panel {
   id: root
   moduleName: "wr.unsplash-wallpapers"
-  ipcTarget: "unsplash"
+  ipcTarget: "wallpapers"
   manageIpc: false
 
   // ---------------------------------------------------------------- config
@@ -36,10 +41,24 @@ Panel {
   readonly property bool configured: accessKey.length > 0
   readonly property string orientation: String(config.orientation || "landscape")
   readonly property var selectedCollections: config.collections instanceof Array ? config.collections : []
-  readonly property var selectedTopics: config.topics instanceof Array ? config.topics : []
-  // Both selection lists as one, for the summary caption and the SELECTED
-  // section. Topics first, matching the order of the picker below.
-  readonly property var selectedSources: selectedTopics.concat(selectedCollections)
+  // The curated grid, resolved once by bin/uw-curated and cached in config.
+  readonly property var curated: config.curated instanceof Array ? config.curated : []
+
+  function isCurated(id) {
+    for (var i = 0; i < curated.length; i++) if (String(curated[i].id) === String(id)) return true
+    return false
+  }
+
+  // Selections that are not in the curated grid — i.e. picked from search.
+  // Only these need the SELECTED list, since curated tiles show their own
+  // checkmark.
+  readonly property var customSelected: {
+    var out = []
+    for (var i = 0; i < selectedCollections.length; i++) {
+      if (!isCurated(selectedCollections[i].id)) out.push(selectedCollections[i])
+    }
+    return out
+  }
 
   readonly property int columns: Math.max(2, parseInt(setting("columns", 3), 10) || 3)
   readonly property int perPage: Math.max(6, parseInt(setting("perPage", 20), 10) || 20)
@@ -67,14 +86,11 @@ Panel {
   property double collectionsFetchedAt: 0
   readonly property int collectionsTtlMs: 30 * 60 * 1000
 
-  // Unsplash's official editorial topics. They change rarely, so they are
-  // fetched once per session and cached for as long as the collections list.
-  property var topics: []
-  property double topicsFetchedAt: 0
-
-  // The Collections pane is one keyboard list spanning both sections:
-  // topics first, then the browsable collections.
-  readonly property int pickerCount: topics.length + collections.length
+  // The Collections pane is one keyboard list spanning both sections: the
+  // curated grid first, then the browsable collections.
+  readonly property int pickerCount: curated.length + collections.length
+  readonly property int curatedColumns: 3
+  readonly property bool curatedProcRunning: curatedProc.running
 
   // ------------------------------------------------------------- status
   // Drawing a photo and applying one are separate actions now, so they get
@@ -114,15 +130,18 @@ Panel {
     errorText = ""
     setupOpen = !configured
     if (panelFlick) panelFlick.contentY = 0
-    if (pane === "collections") { fetchCollections(false); fetchTopics(false) }
+    if (pane === "collections") fetchCollections(false)
     Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
   }
+
+  onConfiguredChanged: if (configured) discoverCurated()
+  Component.onCompleted: discoverCurated()
 
   onPaneChanged: {
     cursorActive = false
     errorText = ""
     if (panelFlick) panelFlick.contentY = 0
-    if (pane === "collections") { fetchCollections(false); fetchTopics(false) }
+    if (pane === "collections") fetchCollections(false)
   }
 
   function pluginBin(name) {
@@ -179,7 +198,7 @@ Panel {
     randomProc.command = ["curl", "-sS", "--max-time", "15",
       "-H", "Authorization: Client-ID " + accessKey,
       "-w", "\n__HTTP__%{http_code}",
-      Model.randomEndpoint(selectedCollections, selectedTopics, orientation)]
+      Model.randomEndpoint(selectedCollections, orientation)]
     randomProc.running = true
   }
 
@@ -249,16 +268,24 @@ Panel {
     Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
   }
 
-  function fetchTopics(force) {
-    if (!configured || topicsProc.running) return
-    var fresh = topics.length > 0 && (Date.now() - topicsFetchedAt) < collectionsTtlMs
-    if (!force && fresh) return
+  // Resolve the curated grid once, on the first run that has a key, and cache
+  // the result in the config. Collection ids are never hardcoded: uw-curated
+  // searches for each name and keeps the biggest match.
+  property bool curatedRequested: false
 
-    topicsProc.command = ["curl", "-sS", "--max-time", "15",
-      "-H", "Authorization: Client-ID " + accessKey,
-      "-w", "\n__HTTP__%{http_code}",
-      Model.topicsEndpoint(30)]
-    topicsProc.running = true
+  function discoverCurated() {
+    if (!configured || curatedRequested || curated.length > 0) return
+    curatedRequested = true
+    curatedProc.command = [pluginBin("uw-curated"), "--key", accessKey]
+      .concat(Model.curatedTermArgs())
+    curatedProc.running = true
+  }
+
+  function rediscoverCurated() {
+    curatedRequested = false
+    saveConfigJson("curated", [])
+    config = Object.assign({}, config, { curated: [] })
+    Qt.callLater(discoverCurated)
   }
 
   function toggleCollection(collection) {
@@ -268,17 +295,9 @@ Panel {
     saveConfigJson("collections", next)
   }
 
-  function toggleTopic(topic) {
-    if (!topic) return
-    var next = Model.toggleCollection(selectedTopics, topic)
-    config = Object.assign({}, config, { topics: next })
-    saveConfigJson("topics", next)
-  }
-
   function clearSources() {
-    config = Object.assign({}, config, { collections: [], topics: [] })
+    config = Object.assign({}, config, { collections: [] })
     saveConfigJson("collections", [])
-    saveConfigJson("topics", [])
   }
 
   // -------------------------------------------------------------- settings
@@ -306,8 +325,8 @@ Panel {
       historyIndex = Model.moveCursor(historyIndex, dx, dy, history.length, columns)
     } else if (pane === "collections") {
       if (pickerCount === 0) return
-      // A single-column list: vertical movement only.
-      collectionIndex = Model.moveCursor(collectionIndex, 0, dy !== 0 ? dy : dx, pickerCount, 1)
+      collectionIndex = Model.movePickerCursor(collectionIndex, dx, dy,
+        curated.length, collections.length, curatedColumns)
     }
   }
 
@@ -316,8 +335,8 @@ Panel {
       applyAndClose(history[Math.max(0, Math.min(historyIndex, history.length - 1))])
     } else if (pane === "collections" && pickerCount > 0) {
       var i = Math.max(0, Math.min(collectionIndex, pickerCount - 1))
-      if (i < topics.length) toggleTopic(topics[i])
-      else toggleCollection(collections[i - topics.length])
+      if (i < curated.length) toggleCollection(curated[i])
+      else toggleCollection(collections[i - curated.length])
     } else if (pane === "home") {
       // Enter applies what is on show; `n` draws another.
       if (canSet) applyAndClose(heroPhoto)
@@ -410,18 +429,22 @@ Panel {
   }
 
   Process {
-    id: topicsProc
+    id: curatedProc
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        var response = Model.parseHttp(text)
-        if (response.status !== 200) {
-          // Topics are supplementary — a failure here must not blank the
-          // collection list or claim the whole pane is broken.
+        var found = Model.parseCurated(text)
+        if (found.length === 0) {
+          // Leave curatedRequested set so this does not retry on a loop; the
+          // settings pane offers an explicit rebuild.
           return
         }
-        root.topics = Model.normalizeTopics(response.body)
-        root.topicsFetchedAt = Date.now()
+        root.config = Object.assign({}, root.config, { curated: found })
+        root.saveConfigJson("curated", found)
+
+        // A fresh install starts pointed at Wallpapers rather than the whole
+        // of Unsplash, where a random photo is as likely to be a portrait.
+        if (root.selectedCollections.length === 0) root.toggleCollection(found[0])
       }
     }
   }
@@ -484,7 +507,7 @@ Panel {
     anchors.fill: parent
     bar: root.bar
     text: "󰸉"
-    tooltipText: root.opened ? "" : "Unsplash wallpapers"
+    tooltipText: root.opened ? "" : "Omarchy Wallpapers"
 
     onPressed: function(buttonCode) {
       // Right-click draws a photo and opens the panel to show it. It must
@@ -533,7 +556,7 @@ Panel {
         else if (t === "o" || t === "O") root.openUrl(root.appliedPhoto ? root.appliedPhoto.htmlLink : "")
         else if (t === "/" && root.pane === "collections") collectionField.forceActiveFocus()
         else if (t === "r" || t === "R") {
-          if (root.pane === "collections") { root.fetchCollections(true); root.fetchTopics(true) }
+          if (root.pane === "collections") root.fetchCollections(true)
         }
       }
 
@@ -561,11 +584,26 @@ Panel {
               id: titleRow
               anchors.left: parent.left
               anchors.verticalCenter: parent.verticalCenter
-              spacing: Style.spacing.md
+              spacing: Style.spacing.sm
+
+              // Omarchy's own mark and wordmark. Deliberately not Unsplash's:
+              // their API guidelines forbid using their logo as an app icon
+              // or their name as the application name.
+              Image {
+                anchors.verticalCenter: parent.verticalCenter
+                source: "file:///usr/share/pixmaps/omarchy.png"
+                width: Style.space(14)
+                height: Style.space(14)
+                sourceSize.width: Style.space(14) * 3
+                fillMode: Image.PreserveAspectFit
+                smooth: true
+                // Text-only fallback if the distro logo is not installed.
+                visible: status === Image.Ready
+              }
 
               Text {
                 anchors.verticalCenter: parent.verticalCenter
-                text: "UNSPLASH"
+                text: "omarchy"
                 color: root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
@@ -575,14 +613,13 @@ Panel {
 
               Text {
                 anchors.verticalCenter: parent.verticalCenter
-                visible: root.configured && !root.setupOpen
-                text: Model.selectionSummary(root.selectedCollections, root.selectedTopics)
-                color: root.faint
+                text: "wallpapers"
+                color: root.dim
                 font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-                elide: Text.ElideRight
-                width: Math.min(implicitWidth, Style.space(190))
+                font.pixelSize: Style.font.bodySmall
+                font.letterSpacing: 1.5
               }
+
             }
 
             Row {
@@ -715,6 +752,15 @@ Panel {
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 onClicked: root.openUrl("https://unsplash.com/oauth/applications")
+              }
+
+              Button {
+                text: "Rebuild curated"
+                tooltipText: "Look up the six curated collections on Unsplash again"
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: root.rediscoverCurated()
               }
 
               Button {
@@ -875,35 +921,69 @@ Panel {
               }
             }
 
-            // Attribution, as Unsplash's API guidelines require.
+            // Attribution, as the Unsplash API guidelines require: the
+            // photographer and Unsplash are both credited, and both link back
+            // with the referral parameters attached.
             Row {
+              id: creditRow
               width: parent.width
-              spacing: Style.spacing.sm
+              spacing: Style.spacing.xs
               visible: !!root.heroPhoto
-
-              TapHandler {
-                onTapped: root.openUrl(root.heroPhoto ? root.heroPhoto.htmlLink : "")
-              }
-              HoverHandler {
-                cursorShape: Qt.PointingHandCursor
-              }
 
               Text {
                 anchors.verticalCenter: parent.verticalCenter
-                text: "󰋩"
+                text: "󰋩  Photo by"
                 color: root.faint
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
+                rightPadding: Style.spacing.xs
+              }
+
+              Text {
+                id: creditAuthor
+                anchors.verticalCenter: parent.verticalCenter
+                width: Math.min(implicitWidth, creditRow.width - Style.space(150))
+                text: root.heroPhoto ? String(root.heroPhoto.authorName || "Unknown") : ""
+                color: authorHover.hovered ? root.foreground : root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                font.underline: authorHover.hovered
+                elide: Text.ElideRight
+
+                HoverHandler {
+                  id: authorHover
+                  cursorShape: Qt.PointingHandCursor
+                }
+                TapHandler {
+                  onTapped: root.openUrl(Model.profileUrl(root.heroPhoto ? root.heroPhoto.authorUsername : ""))
+                }
               }
 
               Text {
                 anchors.verticalCenter: parent.verticalCenter
-                width: parent.width - Style.space(24)
-                text: Model.attributionText(root.heroPhoto)
-                color: root.dim
+                text: "on"
+                color: root.faint
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
-                elide: Text.ElideRight
+                leftPadding: Style.spacing.xs
+                rightPadding: Style.spacing.xs
+              }
+
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Unsplash"
+                color: unsplashHover.hovered ? root.foreground : root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                font.underline: unsplashHover.hovered
+
+                HoverHandler {
+                  id: unsplashHover
+                  cursorShape: Qt.PointingHandCursor
+                }
+                TapHandler {
+                  onTapped: root.openUrl(Model.unsplashUrl())
+                }
               }
             }
 
@@ -949,29 +1029,77 @@ Panel {
 
             Text {
               width: parent.width
-              text: "Photos are drawn from the topics and collections you pick here."
+              text: "Photos are drawn from: " + Model.selectionSummary(root.selectedCollections) + "."
               color: root.faint
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               wrapMode: Text.WordWrap
             }
 
-            // Everything selected, pinned together, so a collection chosen
-            // from an earlier search stays visible and removable after the
-            // browse list has moved on.
+            // The curated grid. Collection ids are discovered at runtime by
+            // bin/uw-curated — biggest match per name — and cached in config.
+            Grid {
+              id: curatedGrid
+              width: parent.width
+              visible: root.curated.length > 0
+              columns: root.curatedColumns
+              spacing: Style.spacing.sm
+
+              readonly property int cellW: Model.cellWidth(width, root.curatedColumns, spacing)
+              readonly property int cellH: Model.cellHeight(cellW)
+
+              Repeater {
+                model: root.curated
+
+                CuratedCell {
+                  required property var modelData
+                  required property int index
+
+                  width: curatedGrid.cellW
+                  height: curatedGrid.cellH
+                  entry: modelData
+                  picked: Model.isSelected(root.selectedCollections, modelData.id)
+                  hasCursor: root.cursorActive && root.pane === "collections"
+                    && root.collectionIndex === index
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+
+                  onToggled: root.toggleCollection(modelData)
+                  onHoveredIn: {
+                    root.cursorActive = true
+                    root.collectionIndex = index
+                  }
+                }
+              }
+            }
+
+            Text {
+              width: parent.width
+              visible: root.curated.length === 0
+              text: root.curatedProcRunning
+                ? "Finding collections…"
+                : "Could not load the curated collections. Rebuild from settings (⚙)."
+              color: root.faint
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              font.italic: true
+            }
+
+            // Anything picked from search rather than the grid. Curated tiles
+            // carry their own checkmark, so listing them again would be noise.
             Column {
               width: parent.width
-              visible: root.selectedSources.length > 0
+              visible: root.customSelected.length > 0
               spacing: Style.spacing.sm
 
               PanelSectionHeader {
-                text: "SELECTED"
+                text: "ALSO SELECTED"
                 foreground: root.foreground
                 fontFamily: root.fontFamily
               }
 
               Repeater {
-                model: root.selectedSources
+                model: root.customSelected
 
                 Rectangle {
                   required property var modelData
@@ -1014,51 +1142,7 @@ Panel {
                   }
 
                   TapHandler {
-                    // The two lists are disjoint, so membership decides which
-                    // selection this row belongs to.
-                    onTapped: {
-                      if (Model.isSelected(root.selectedTopics, modelData.id)) root.toggleTopic(modelData)
-                      else root.toggleCollection(modelData)
-                    }
-                  }
-                }
-              }
-            }
-
-            // Unsplash's official editorial topics — the closest thing to the
-            // themes in Unsplash's own desktop app, and permanent, unlike the
-            // collections below.
-            Column {
-              width: parent.width
-              visible: root.topics.length > 0
-              spacing: Style.spacing.sm
-
-              PanelSectionHeader {
-                text: "CURATED BY UNSPLASH"
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-              }
-
-              Repeater {
-                model: root.topics
-
-                SourceRow {
-                  required property var modelData
-                  required property int index
-
-                  width: parent.width
-                  entry: modelData
-                  picked: Model.isSelected(root.selectedTopics, modelData.id)
-                  hasCursor: root.cursorActive && root.pane === "collections"
-                    && root.collectionIndex === index
-                  foreground: root.foreground
-                  faint: root.faint
-                  fontFamily: root.fontFamily
-
-                  onToggled: root.toggleTopic(modelData)
-                  onHoveredIn: {
-                    root.cursorActive = true
-                    root.collectionIndex = index
+                    onTapped: root.toggleCollection(modelData)
                   }
                 }
               }
@@ -1092,8 +1176,8 @@ Panel {
                 text: "Clear"
                 tooltipText: "Deselect everything and use all of Unsplash"
                 bordered: true
-                enabled: root.selectedSources.length > 0
-                foreground: root.selectedSources.length > 0 ? root.foreground : root.faint
+                enabled: root.selectedCollections.length > 0
+                foreground: root.selectedCollections.length > 0 ? root.foreground : root.faint
                 fontFamily: root.fontFamily
                 fontSize: Style.font.caption
                 verticalPadding: Style.spacing.sm
@@ -1121,9 +1205,9 @@ Panel {
                   width: parent.width
                   entry: modelData
                   picked: Model.isSelected(root.selectedCollections, modelData.id)
-                  // The keyboard cursor spans both sections, topics first.
+                  // The keyboard cursor spans both sections, curated first.
                   hasCursor: root.cursorActive && root.pane === "collections"
-                    && root.collectionIndex === root.topics.length + index
+                    && root.collectionIndex === root.curated.length + index
                   foreground: root.foreground
                   faint: root.faint
                   fontFamily: root.fontFamily
@@ -1131,7 +1215,7 @@ Panel {
                   onToggled: root.toggleCollection(modelData)
                   onHoveredIn: {
                     root.cursorActive = true
-                    root.collectionIndex = root.topics.length + index
+                    root.collectionIndex = root.curated.length + index
                   }
                 }
               }

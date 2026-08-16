@@ -6,23 +6,16 @@ var BASE = "https://api.unsplash.com"
 
 // Attribution parameters Unsplash's API guidelines require on every link
 // back to a photo or photographer profile.
-var UTM = "utm_source=omarchy_unsplash_wallpapers&utm_medium=referral"
+var UTM = "utm_source=omarchy_wallpapers&utm_medium=referral"
 
 // ------------------------------------------------------------------ endpoints
 
-// One random photo, drawn from the selected topics and collections when there
-// are any. This is the whole engine behind "New photo": a single request per
-// photo, matching how Unsplash's own desktop app works.
-//
-// Unsplash accepts `topics` and `collections` on the same request (verified —
-// it returns 200 rather than an error), though it does not document how the
-// two combine. Both are sent as selected and the API decides.
-function randomEndpoint(collectionIds, topicIds, orientation) {
+// One random photo, drawn from the selected collections when there are any.
+// This is the whole engine behind "New photo": a single request per photo,
+// matching how Unsplash's own desktop app works.
+function randomEndpoint(collectionIds, orientation) {
   var url = BASE + "/photos/random?count=1"
   if (orientation) url += "&orientation=" + encodeURIComponent(orientation)
-
-  var topics = collectionIdList(topicIds)
-  if (topics !== "") url += "&topics=" + encodeURIComponent(topics)
 
   var ids = collectionIdList(collectionIds)
   if (ids !== "") url += "&collections=" + encodeURIComponent(ids)
@@ -31,39 +24,72 @@ function randomEndpoint(collectionIds, topicIds, orientation) {
   return url + "&_=" + Date.now()
 }
 
-// Unsplash's official editorial topics — the permanent, curated categories
-// behind unsplash.com/t/*. `order_by=featured` puts the ones the site
-// promotes (Wallpapers, Nature, …) first.
-function topicsEndpoint(perPage) {
-  var per = Math.max(1, parseInt(perPage, 10) || 20)
-  return BASE + "/topics?per_page=" + per + "&order_by=featured"
+// The curated grid. These are search terms, not ids: the matching collections
+// are looked up at runtime by bin/uw-curated (biggest wins) and cached in the
+// config, so nothing here goes stale when Unsplash reshuffles its collections.
+// `label` is what the grid shows — short and predictable, where the underlying
+// collection titles are neither ("Black and White Images").
+function curatedTerms() {
+  return [
+    { term: "wallpapers", label: "Wallpapers" },
+    { term: "nature", label: "Nature" },
+    { term: "architecture", label: "Architecture" },
+    { term: "space", label: "Space" },
+    { term: "beach", label: "Beach" },
+    { term: "black & white", label: "Black & White" }
+  ]
 }
 
-function normalizeTopics(body) {
-  var data
-  try {
-    data = JSON.parse(String(body || ""))
-  } catch (e) {
-    return []
+function curatedTermArgs() {
+  var terms = curatedTerms()
+  var out = []
+  for (var i = 0; i < terms.length; i++) out.push(terms[i].term)
+  return out
+}
+
+function labelForTerm(term) {
+  var terms = curatedTerms()
+  for (var i = 0; i < terms.length; i++) {
+    if (terms[i].term === String(term || "")) return terms[i].label
   }
-  if (!(data instanceof Array)) return []
+  return String(term || "")
+}
+
+// Attach display labels to what uw-curated discovered, keeping the order of
+// curatedTerms() rather than the order the lookups happened to finish in.
+function labelCurated(entries) {
+  if (!(entries instanceof Array)) return []
+  var byTerm = {}
+  for (var i = 0; i < entries.length; i++) {
+    var e = entries[i]
+    if (e && e.term) byTerm[String(e.term)] = e
+  }
 
   var out = []
-  for (var i = 0; i < data.length; i++) {
-    var t = data[i]
-    if (!t || !t.id) continue
+  var terms = curatedTerms()
+  for (var t = 0; t < terms.length; t++) {
+    var found = byTerm[terms[t].term]
+    if (!found || !found.id) continue
     out.push({
-      id: String(t.id),
-      slug: String(t.slug || ""),
-      title: String(t.title || "Untitled"),
-      description: "",
-      totalPhotos: parseInt(t.total_photos, 10) || 0,
-      coverUrl: (t.cover_photo && t.cover_photo.urls) ? String(t.cover_photo.urls.small || "") : "",
-      coverColor: (t.cover_photo && t.cover_photo.color) ? String(t.cover_photo.color) : "#1b1b1b",
-      curator: ""
+      id: String(found.id),
+      term: terms[t].term,
+      label: terms[t].label,
+      title: String(found.title || terms[t].label),
+      totalPhotos: parseInt(found.totalPhotos, 10) || 0,
+      coverUrl: String(found.coverUrl || ""),
+      coverColor: String(found.coverColor || "#1b1b1b"),
+      curator: String(found.curator || "")
     })
   }
   return out
+}
+
+function parseCurated(raw) {
+  try {
+    return labelCurated(JSON.parse(String(raw || "")))
+  } catch (e) {
+    return []
+  }
 }
 
 // `/collections` is the public collection list; `/collections/featured` was
@@ -159,7 +185,9 @@ function normalizeCollections(body) {
       id: String(c.id),
       title: String(c.title || "Untitled"),
       description: String(c.description || ""),
-      totalPhotos: parseInt(c.total_photos, 10) || 0,
+      // Only photos a free key can fetch: an Unsplash+ collection reports a
+      // big total_photos but /photos/random returns 404 for it.
+      totalPhotos: Math.max(0, (parseInt(c.total_photos, 10) || 0) - (parseInt(c.total_plus, 10) || 0)),
       coverUrl: (c.cover_photo && c.cover_photo.urls) ? String(c.cover_photo.urls.small || "") : "",
       coverColor: (c.cover_photo && c.cover_photo.color) ? String(c.cover_photo.color) : "#1b1b1b",
       curator: (c.user && c.user.name) ? String(c.user.name) : ""
@@ -193,7 +221,7 @@ function errorFor(status, body) {
 function randomErrorFor(status, body, hasCollections) {
   if (status === 404) {
     return hasCollections
-      ? "No photos in those collections for this orientation."
+      ? "No free photos in those collections for this orientation — Unsplash+ collections are not available to the API."
       : "Unsplash returned no photo. Try again."
   }
   return errorFor(status, body)
@@ -217,6 +245,18 @@ function wallpaperUrl(rawUrl, width) {
   return u + (u.indexOf("?") >= 0 ? "&" : "?") + "w=" + w + "&q=85&fm=jpg&fit=max"
 }
 
+// The guidelines require crediting the photographer *and* Unsplash, with the
+// photographer's profile linked. These build the two targets; both go through
+// withUtm() before use.
+function profileUrl(username) {
+  var name = String(username || "").replace(/^\s+|\s+$/g, "")
+  return name === "" ? "https://unsplash.com/" : "https://unsplash.com/@" + encodeURIComponent(name)
+}
+
+function unsplashUrl() {
+  return "https://unsplash.com/"
+}
+
 function attributionText(photo) {
   if (!photo) return ""
   var name = String(photo.authorName || "").replace(/^\s+|\s+$/g, "")
@@ -234,12 +274,6 @@ function heroSource(photo) {
 
 // -------------------------------------------------------------------- config
 
-// Unsplash's official Wallpapers topic. Preselected on a fresh install: an
-// unfiltered random photo is as likely to be a portrait or a product shot as
-// something you would want behind your windows. Unticking it persists an
-// empty list, which is honoured — the default only fills in a missing key.
-var WALLPAPERS_TOPIC_ID = "bo8jQKTaE0Y"
-
 function defaultConfig() {
   return {
     accessKey: "",
@@ -248,8 +282,8 @@ function defaultConfig() {
     // History records every photo shown, not just the ones applied, so it
     // needs a ceiling — the panel renders the whole list.
     historyMax: 200,
-    // Official editorial topics, same [{ id, title }] shape as collections.
-    topics: [{ id: WALLPAPERS_TOPIC_ID, title: "Wallpapers" }],
+    // Resolved curated grid, discovered on first run by bin/uw-curated.
+    curated: [],
     // [{ id, title }] — the title is stored alongside the id so the selected
     // list stays readable without re-fetching every collection it names.
     collections: []
@@ -274,7 +308,7 @@ function parseConfig(raw) {
   if (isFinite(historyMax) && historyMax > 0) config.historyMax = historyMax
 
   config.collections = parseSelectionList(data.collections, config.collections)
-  config.topics = parseSelectionList(data.topics, config.topics)
+  config.curated = labelCurated(data.curated)
   return config
 }
 
@@ -311,10 +345,8 @@ function toggleCollection(collections, collection) {
 
 // Header caption describing where photos come from. Names the single source
 // when there is exactly one, so the common case reads concretely.
-function selectionSummary(collections, topics) {
-  var picked = []
-  if (topics instanceof Array) picked = picked.concat(topics)
-  if (collections instanceof Array) picked = picked.concat(collections)
+function selectionSummary(collections) {
+  var picked = collections instanceof Array ? collections : []
 
   if (picked.length === 0) return "All of Unsplash"
   if (picked.length === 1) return picked[0].title
@@ -372,6 +404,44 @@ function cellWidth(available, columns, gap) {
 
 function cellHeight(width) {
   return Math.round((Number(width) || 0) * 2 / 3)
+}
+
+// The Collections pane is a 3-wide curated grid stacked on a 1-wide list of
+// search results. Cursor indices run through the grid first, then the list, so
+// Down off the last grid row steps into the list and Up off the top of the
+// list steps back into the grid.
+function movePickerCursor(index, dx, dy, curatedCount, listCount, columns) {
+  var cols = Math.max(1, parseInt(columns, 10) || 3)
+  var total = curatedCount + listCount
+  if (total <= 0) return 0
+  var i = Math.max(0, Math.min(parseInt(index, 10) || 0, total - 1))
+
+  if (i < curatedCount) {
+    if (dx !== 0) {
+      var column = i % cols
+      var target = column + dx
+      if (target < 0 || target >= cols) return i
+      var sideways = i + dx
+      return sideways >= 0 && sideways < curatedCount ? sideways : i
+    }
+    if (dy > 0) {
+      var down = i + cols
+      if (down < curatedCount) return down
+      return listCount > 0 ? curatedCount : i
+    }
+    if (dy < 0) {
+      var up = i - cols
+      return up >= 0 ? up : i
+    }
+    return i
+  }
+
+  if (dy > 0) return i + 1 < total ? i + 1 : i
+  if (dy < 0) {
+    if (i > curatedCount) return i - 1
+    return curatedCount > 0 ? curatedCount - 1 : i
+  }
+  return i
 }
 
 // Grid cursor movement, clamped so Left/Right never wrap onto another row

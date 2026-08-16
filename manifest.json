@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
   "id": "wr.unsplash-wallpapers",
-  "name": "Unsplash Wallpapers",
+  "name": "Omarchy Wallpapers",
   "version": "1.0.0",
   "author": "wr",
   "license": "MIT",
-  "description": "Browse Unsplash from the bar and set any photo as your Omarchy background, with optional auto-rotation.",
+  "description": "Browse photos from Unsplash in the bar and set them as your Omarchy background.",
   "kinds": [
     "bar-widget"
   ],
@@ -13,8 +13,8 @@
     "barWidget": "Panel.qml"
   },
   "barWidget": {
-    "displayName": "Unsplash Wallpapers",
-    "description": "Browse Unsplash topics, search photos, and set them as your background.",
+    "displayName": "Omarchy Wallpapers",
+    "description": "Pick curated collections and set photos as your background.",
     "category": "Appearance",
     "allowMultiple": false,
     "defaultSection": "right",

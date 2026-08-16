@@ -1,9 +1,15 @@
-# Unsplash Wallpapers
+# Omarchy Wallpapers
 
-Unsplash in the Omarchy bar. Draw a random photo from the topics and
+A wallpaper browser in the Omarchy bar. Draw a random photo from the
 collections you pick, set it as your wallpaper. An
-[Omarchy](https://omarchy.org/) shell plugin, modelled on Unsplash's macOS
-menu bar app.
+[Omarchy](https://omarchy.org/) shell plugin, powered by
+[Unsplash](https://unsplash.com/).
+
+Not affiliated with or endorsed by Unsplash. The
+[API guidelines](https://help.unsplash.com/en/articles/2511245-unsplash-api-guidelines)
+forbid using their name in an application name or their logo as an app icon,
+so this is "Omarchy Wallpapers"; every photo credits its photographer and
+Unsplash, both linked.
 
 Drawing and applying are separate — click the photo as often as you like;
 nothing reaches your desktop until you press **Set as wallpaper**.
@@ -28,7 +34,7 @@ Uninstall: `omarchy plugin remove wr.unsplash-wallpapers`
 | Pane | |
 |---|---|
 | **Home** | The photo on show. Click it (or the ⟳ over it) to draw another. **Set as wallpaper** applies it and closes the panel. |
-| **Collections** | **Curated by Unsplash** lists the official editorial topics (Wallpapers, Nature, Textures, Architecture, Travel, Film…); below that, browse or search any public collection. Tick any mix. **Wallpapers** is selected out of the box; untick everything for all of Unsplash. |
+| **Collections** | A 3×2 grid of six curated collections — Wallpapers, Nature, Architecture, Space, Beach, Black & White — plus search for any other public collection. Tick any mix. **Wallpapers** is selected out of the box; untick everything to draw from all of Unsplash. |
 | **History** | Every photo shown, applied or not. Click one to set it. |
 
 ## Mouse
@@ -38,7 +44,7 @@ Uninstall: `omarchy plugin remove wr.unsplash-wallpapers`
 | Left-click icon | Open/close |
 | Right-click icon | Open and draw a photo |
 | Click photo | Draw another |
-| Click topic/collection | Select/deselect as a source |
+| Click a collection | Select/deselect as a source |
 | Click history thumb | Set it, close |
 | Right-click history thumb | Open on unsplash.com |
 
@@ -64,6 +70,17 @@ Uninstall: `omarchy plugin remove wr.unsplash-wallpapers`
 | `orientation` | `landscape` | `landscape`, `portrait`, `squarish` (also a button in ⚙) |
 | `keep` | `10` | Downloaded wallpapers to keep |
 | `historyMax` | `200` | History entries to keep |
+| `curated` | discovered | The six grid collections. Resolved on first run, cached here. Rebuild from ⚙. |
+| `collections` | Wallpapers | Which collections photos are drawn from |
+
+### The curated grid
+
+Collection ids are never hardcoded. On first run `bin/uw-curated` searches
+Unsplash for each of the six names and keeps the **largest match**, counted in
+photos a free API key can actually fetch — `total_photos` minus `total_plus`.
+That last part matters: the biggest "wallpapers" collection is Unsplash+
+premium, and `/photos/random` answers 404 for it. Results are cached in
+`curated`; **Rebuild curated** in ⚙ re-runs the lookup.
 
 Config lives in `~/.local/state/omarchy/settings/unsplash.json` (mode 0600) —
 outside `~/.config` so the access key stays out of dotfiles repos.
@@ -78,7 +95,7 @@ are kept; older `unsplash-*.jpg` in that directory are deleted, nothing else.
 State, all in `~/.local/state/omarchy/settings/`:
 
 ```
-unsplash.json          key, orientation, topics, collections, limits
+unsplash.json          key, orientation, collections, curated, limits
 unsplash-current.json  photo currently applied
 unsplash-history.json  every photo shown
 ```
@@ -87,9 +104,11 @@ Source:
 
 ```
 Panel.qml              bar button + three-pane popup
-SourceRow.qml          one selectable topic/collection row
+CuratedCell.qml        one tile in the curated grid
+SourceRow.qml          one row in the search/browse list
 Model.js               endpoints, parsing, config, grid math
 bin/uw-config          read/write config
+bin/uw-curated         resolve the six curated collections
 bin/uw-history         record photos shown
 bin/uw-set-wallpaper   download, apply, prune
 ```
@@ -106,16 +125,17 @@ omarchy-shell unsplash showPane home|collections|history
 Bind in `~/.config/hypr/bindings.lua`:
 
 ```lua
-o.bind("SUPER CTRL", "U", "omarchy-shell unsplash toggle")
+o.bind("SUPER CTRL", "U", "omarchy-shell wallpapers toggle")
 ```
 
 `next` then `set` on a systemd timer gives you rotation.
 
 ## Attribution
 
-Credits every photographer, links back with Unsplash's required referral
-parameters, and pings the API's download endpoint on apply — per the
-[Unsplash API Terms](https://unsplash.com/api-terms).
+Every photo credits its photographer and Unsplash, both linked with the
+required `utm_source`/`utm_medium` referral parameters; images are hotlinked
+from the API's own URLs, and the download endpoint is pinged on apply — per the
+[Unsplash API Guidelines](https://help.unsplash.com/en/articles/2511245-unsplash-api-guidelines).
 
 ## License
 
