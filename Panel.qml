@@ -116,13 +116,36 @@ Panel {
     return pluginDir + "bin/" + name
   }
 
+  // Config writes go through a queue because assigning `running = true` to a
+  // Process that is still running is silently ignored — a second setting
+  // changed while the first was being written would never reach disk. Keyed
+  // by config key, so repeated changes to one setting collapse to the last
+  // value rather than queueing a run per click.
+  property var pendingWrites: ({})
+
   function saveConfig(key, value) {
-    configProc.command = [pluginBin("uw-config"), "set", key, String(value)]
-    configProc.running = true
+    pendingWrites[key] = { json: false, value: value }
+    flushWrites()
   }
 
   function saveConfigJson(key, value) {
-    configProc.command = [pluginBin("uw-config"), "setjson", key, JSON.stringify(value)]
+    pendingWrites[key] = { json: true, value: value }
+    flushWrites()
+  }
+
+  function flushWrites() {
+    if (configProc.running) return
+
+    var keys = Object.keys(pendingWrites)
+    if (keys.length === 0) return
+
+    var key = keys[0]
+    var entry = pendingWrites[key]
+    delete pendingWrites[key]
+
+    configProc.command = entry.json
+      ? [pluginBin("uw-config"), "setjson", key, JSON.stringify(entry.value)]
+      : [pluginBin("uw-config"), "set", key, String(entry.value)]
     configProc.running = true
   }
 
@@ -160,13 +183,6 @@ Panel {
       "--raw", String(photo.rawUrl || ""),
       "--max", String(parseInt(config.historyMax, 10) || 200)]
     historyProc.running = true
-  }
-
-  // Put the photo on show in Home without touching the wallpaper.
-  function showPhoto(photo) {
-    if (!photo) return
-    previewPhoto = photo
-    pane = "home"
   }
 
   // Applying is always the last thing you want from the panel, so it gets out
@@ -366,7 +382,20 @@ Panel {
     }
   }
 
-  Process { id: configProc }
+  // Config writes are fire-and-forget, but a silent failure means a setting
+  // the user changed quietly fails to stick, so surface it.
+  Process {
+    id: configProc
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: if (String(text || "").trim() !== "") console.log("unsplash: uw-config: " + text)
+    }
+    onExited: function(exitCode) {
+      if (exitCode !== 0) root.errorText = "Could not save that setting."
+      root.flushWrites()
+    }
+  }
+
   Process { id: historyProc }
 
   IpcHandler {
@@ -754,13 +783,13 @@ Panel {
                 width: Style.space(58)
                 height: width
                 radius: width / 2
-                color: Qt.rgba(0, 0, 0, heroMouse.containsMouse ? 0.62 : 0.42)
+                color: Qt.rgba(0, 0, 0, heroHover.hovered ? 0.62 : 0.42)
                 opacity: root.applying ? 0 : 1
 
                 Behavior on color { ColorAnimation { duration: 120 } }
                 Behavior on opacity { NumberAnimation { duration: 120 } }
 
-                scale: heroMouse.containsMouse ? 1.06 : 1.0
+                scale: heroHover.hovered ? 1.06 : 1.0
                 Behavior on scale {
                   NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
                 }
@@ -783,13 +812,14 @@ Panel {
                 }
               }
 
-              MouseArea {
-                id: heroMouse
-                anchors.fill: parent
-                enabled: !root.drawing && !root.applying
-                hoverEnabled: true
+              HoverHandler {
+                id: heroHover
                 cursorShape: Qt.PointingHandCursor
-                onClicked: root.newPhoto()
+              }
+
+              TapHandler {
+                enabled: !root.drawing && !root.applying
+                onTapped: root.newPhoto()
               }
             }
 
@@ -963,11 +993,12 @@ Panel {
                     }
                   }
 
-                  MouseArea {
-                    anchors.fill: parent
-                    hoverEnabled: true
+                  HoverHandler {
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: root.toggleCollection(modelData)
+                  }
+
+                  TapHandler {
+                    onTapped: root.toggleCollection(modelData)
                   }
                 }
               }
@@ -995,7 +1026,7 @@ Panel {
                   height: Style.space(46)
 
                   readonly property bool picked: Model.isSelected(root.selectedCollections, modelData.id)
-                  readonly property bool hot: rowMouse.containsMouse
+                  readonly property bool hot: rowHover.hovered
                     || (root.cursorActive && root.pane === "collections" && root.collectionIndex === index)
 
                   color: hot ? Style.hoverFillFor(root.foreground, Color.accent)
@@ -1062,16 +1093,22 @@ Panel {
                     }
                   }
 
-                  MouseArea {
-                    id: rowMouse
-                    anchors.fill: parent
-                    hoverEnabled: true
+                  // TapHandler, not MouseArea: this list is long enough to
+                  // scroll, and a MouseArea inside an interactive Flickable
+                  // loses its click the moment the pointer drifts a pixel
+                  // during the press — which is most clicks on a trackpad.
+                  // TapHandler cooperates with the Flickable's drag instead.
+                  HoverHandler {
+                    id: rowHover
                     cursorShape: Qt.PointingHandCursor
-                    onContainsMouseChanged: if (containsMouse) {
+                    onHoveredChanged: if (hovered) {
                       root.cursorActive = true
                       root.collectionIndex = collectionRow.index
                     }
-                    onClicked: root.toggleCollection(collectionRow.modelData)
+                  }
+
+                  TapHandler {
+                    onTapped: root.toggleCollection(collectionRow.modelData)
                   }
                 }
               }
@@ -1128,7 +1165,7 @@ Panel {
 
                   property bool fellBack: false
 
-                  readonly property bool hot: historyMouse.containsMouse
+                  readonly property bool hot: historyHover.hovered
                     || (root.cursorActive && root.pane === "history" && root.historyIndex === index)
                   readonly property bool isApplied: root.appliedId !== "" && String(modelData.id) === root.appliedId
 
@@ -1195,21 +1232,25 @@ Panel {
                     border.color: Style.hoverStateColor(root.foreground, Color.accent)
                   }
 
-                  MouseArea {
-                    id: historyMouse
-                    anchors.fill: parent
-                    hoverEnabled: true
+                  // Handlers rather than a MouseArea, for the same reason as
+                  // the collection rows: this grid scrolls.
+                  HoverHandler {
+                    id: historyHover
                     cursorShape: Qt.PointingHandCursor
-                    acceptedButtons: Qt.LeftButton | Qt.RightButton
-
-                    onContainsMouseChanged: if (containsMouse) {
+                    onHoveredChanged: if (hovered) {
                       root.cursorActive = true
                       root.historyIndex = historyCell.index
                     }
-                    onClicked: function(mouse) {
-                      if (mouse.button === Qt.RightButton) root.openUrl(historyCell.modelData.htmlLink)
-                      else root.applyAndClose(historyCell.modelData)
-                    }
+                  }
+
+                  TapHandler {
+                    acceptedButtons: Qt.LeftButton
+                    onTapped: root.applyAndClose(historyCell.modelData)
+                  }
+
+                  TapHandler {
+                    acceptedButtons: Qt.RightButton
+                    onTapped: root.openUrl(historyCell.modelData.htmlLink)
                   }
                 }
               }
