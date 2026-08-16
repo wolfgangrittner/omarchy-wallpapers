@@ -8,46 +8,43 @@ var BASE = "https://api.unsplash.com"
 // back to a photo or photographer profile.
 var UTM = "utm_source=omarchy_unsplash_wallpapers&utm_medium=referral"
 
-// Curated topic slugs, mirroring the category browser in Unsplash's own
-// desktop app. `random` is not a topic — it hits the random endpoint.
-function sources() {
-  return [
-    { id: "topic:wallpapers", label: "Wallpapers" },
-    { id: "topic:nature", label: "Nature" },
-    { id: "topic:textures-patterns", label: "Textures" },
-    { id: "topic:architecture-interior", label: "Architecture" },
-    { id: "topic:travel", label: "Travel" },
-    { id: "random", label: "Shuffle" }
-  ]
+// ------------------------------------------------------------------ endpoints
+
+// One random photo, drawn from the selected collections when there are any.
+// This is the whole engine behind "New photo" and the rotation timer: a single
+// request per change, matching how Unsplash's own desktop app works.
+function randomEndpoint(collectionIds, orientation) {
+  var url = BASE + "/photos/random?count=1"
+  if (orientation) url += "&orientation=" + encodeURIComponent(orientation)
+  var ids = collectionIdList(collectionIds)
+  if (ids !== "") url += "&collections=" + encodeURIComponent(ids)
+  // Random responses must never be served from a cache.
+  return url + "&_=" + Date.now()
 }
 
-function labelForSource(id, query) {
-  if (id === "search") return query ? '"' + query + '"' : "Search"
-  var list = sources()
-  for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i].label
-  return "Featured"
+// `/collections` is the public collection list; `/collections/featured` was
+// removed from the API (it 404s), so browsing and searching are the two modes.
+function collectionsEndpoint(query, perPage) {
+  var per = Math.max(1, parseInt(perPage, 10) || 20)
+  var q = String(query || "").replace(/^\s+|\s+$/g, "")
+  if (q !== "") {
+    return BASE + "/search/collections?query=" + encodeURIComponent(q) + "&per_page=" + per
+  }
+  return BASE + "/collections?per_page=" + per
 }
 
-function endpointFor(source, query, page, perPage, orientation) {
-  var per = Math.max(1, parseInt(perPage, 10) || 12)
-  var p = Math.max(1, parseInt(page, 10) || 1)
-  var orient = orientation ? "&orientation=" + encodeURIComponent(orientation) : ""
-
-  if (source === "search") {
-    return BASE + "/search/photos?query=" + encodeURIComponent(query || "")
-      + "&page=" + p + "&per_page=" + per + orient
+function collectionIdList(collections) {
+  var ids = []
+  var list = collections instanceof Array ? collections : []
+  for (var i = 0; i < list.length; i++) {
+    var id = typeof list[i] === "string" ? list[i] : (list[i] ? list[i].id : "")
+    id = String(id || "").replace(/^\s+|\s+$/g, "")
+    if (id !== "") ids.push(id)
   }
-  if (source === "random") {
-    // Random is uncacheable by design; the cache-buster keeps any
-    // intermediary from replaying the previous set.
-    return BASE + "/photos/random?count=" + per + orient + "&_=" + Date.now()
-  }
-  if (String(source).indexOf("topic:") === 0) {
-    return BASE + "/topics/" + encodeURIComponent(String(source).substring(6))
-      + "/photos?page=" + p + "&per_page=" + per + orient
-  }
-  return BASE + "/photos?page=" + p + "&per_page=" + per
+  return ids.join(",")
 }
+
+// ---------------------------------------------------------------- responses
 
 // curl is invoked with `-w "\n__HTTP__%{http_code}"` so the status code
 // survives without needing a second request or header parsing.
@@ -61,9 +58,8 @@ function parseHttp(text) {
   }
 }
 
-// Every Unsplash list endpoint returns a slightly different envelope:
-// /photos and /topics/*/photos return a bare array, /search/photos wraps it
-// in `results`, and /photos/random returns an object when count is omitted.
+// /photos/random returns a bare array when `count` is set and a single object
+// when it is not; both shapes are accepted here.
 function normalizePhotos(body) {
   var data
   try {
@@ -83,17 +79,46 @@ function normalizePhotos(body) {
     if (!p || !p.urls) continue
     out.push({
       id: String(p.id || ""),
+      previewUrl: String(p.urls.regular || p.urls.small || ""),
       thumbUrl: String(p.urls.small || p.urls.thumb || ""),
       rawUrl: String(p.urls.raw || p.urls.full || ""),
       htmlLink: p.links ? String(p.links.html || "") : "",
       downloadLocation: p.links ? String(p.links.download_location || "") : "",
       authorName: p.user ? String(p.user.name || "") : "",
       authorUsername: p.user ? String(p.user.username || "") : "",
-      authorLink: (p.user && p.user.links) ? String(p.user.links.html || "") : "",
       description: String(p.alt_description || p.description || ""),
-      color: String(p.color || "#1b1b1b"),
-      width: parseInt(p.width, 10) || 0,
-      height: parseInt(p.height, 10) || 0
+      color: String(p.color || "#1b1b1b")
+    })
+  }
+  return out
+}
+
+function normalizeCollections(body) {
+  var data
+  try {
+    data = JSON.parse(String(body || ""))
+  } catch (e) {
+    return []
+  }
+
+  var list = []
+  if (data instanceof Array) list = data
+  else if (data && data.results instanceof Array) list = data.results
+
+  var out = []
+  for (var i = 0; i < list.length; i++) {
+    var c = list[i]
+    if (!c || !c.id) continue
+    out.push({
+      // Collection ids are not always numeric ("WV3nU0MXUMw"), so they stay
+      // strings everywhere — including in the saved config.
+      id: String(c.id),
+      title: String(c.title || "Untitled"),
+      description: String(c.description || ""),
+      totalPhotos: parseInt(c.total_photos, 10) || 0,
+      coverUrl: (c.cover_photo && c.cover_photo.urls) ? String(c.cover_photo.urls.small || "") : "",
+      coverColor: (c.cover_photo && c.cover_photo.color) ? String(c.cover_photo.color) : "#1b1b1b",
+      curator: (c.user && c.user.name) ? String(c.user.name) : ""
     })
   }
   return out
@@ -101,9 +126,9 @@ function normalizePhotos(body) {
 
 // Unsplash signals a spent rate limit with 403, not 429.
 function errorFor(status, body) {
-  if (status === 401) return "Access key rejected — check it in settings (press ⚙)."
+  if (status === 401) return "Access key rejected — check it in settings (⚙)."
   if (status === 403) return "Hourly rate limit reached. Demo apps get 50 requests/hour."
-  if (status === 404) return "Nothing found for that search."
+  if (status === 404) return "Nothing found."
   if (status === 0) return "Could not reach Unsplash. Check your connection."
   if (status >= 500) return "Unsplash is having trouble (" + status + "). Try again shortly."
   if (status >= 400) {
@@ -118,6 +143,19 @@ function errorFor(status, body) {
   }
   return ""
 }
+
+// A 404 from the random endpoint means the collection/orientation combination
+// is empty, which is a filter problem rather than a missing resource.
+function randomErrorFor(status, body, hasCollections) {
+  if (status === 404) {
+    return hasCollections
+      ? "No photos in those collections for this orientation."
+      : "Unsplash returned no photo. Try again."
+  }
+  return errorFor(status, body)
+}
+
+// -------------------------------------------------------------------- links
 
 function withUtm(url) {
   var u = String(url || "")
@@ -141,7 +179,17 @@ function attributionText(photo) {
   return name === "" ? "Photo from Unsplash" : "Photo by " + name + " on Unsplash"
 }
 
-// Rotation cadences offered by the footer button, in minutes. 0 is off.
+// Prefer the copy already on disk — it is the exact image on screen and needs
+// no network — and fall back to the CDN preview once pruning removes it.
+function heroSource(photo) {
+  if (!photo) return ""
+  var path = String(photo.path || "")
+  if (path !== "") return "file://" + path
+  return String(photo.previewUrl || "")
+}
+
+// ------------------------------------------------------------------ rotation
+
 function rotateOptions() {
   return [
     { minutes: 0, label: "Off" },
@@ -168,14 +216,17 @@ function nextRotateMinutes(minutes) {
   return 0
 }
 
+// -------------------------------------------------------------------- config
+
 function defaultConfig() {
   return {
     accessKey: "",
-    source: "topic:wallpapers",
-    query: "",
     orientation: "landscape",
     rotateMinutes: 0,
-    keep: 10
+    keep: 10,
+    // [{ id, title }] — the title is stored alongside the id so the selected
+    // list stays readable without re-fetching every collection it names.
+    collections: []
   }
 }
 
@@ -190,18 +241,93 @@ function parseConfig(raw) {
   if (!data || typeof data !== "object") return config
 
   if (typeof data.accessKey === "string") config.accessKey = data.accessKey.replace(/^\s+|\s+$/g, "")
-  if (typeof data.source === "string" && data.source !== "") config.source = data.source
-  if (typeof data.query === "string") config.query = data.query
   if (typeof data.orientation === "string") config.orientation = data.orientation
   var rotate = parseInt(data.rotateMinutes, 10)
   if (isFinite(rotate) && rotate >= 0) config.rotateMinutes = rotate
   var keep = parseInt(data.keep, 10)
   if (isFinite(keep) && keep >= 0) config.keep = keep
+
+  if (data.collections instanceof Array) {
+    var selected = []
+    for (var i = 0; i < data.collections.length; i++) {
+      var entry = data.collections[i]
+      // Tolerate a bare id array from a hand-edited config.
+      if (typeof entry === "string") selected.push({ id: entry, title: entry })
+      else if (entry && entry.id) selected.push({ id: String(entry.id), title: String(entry.title || entry.id) })
+    }
+    config.collections = selected
+  }
   return config
 }
 
-// Grid geometry. Cells keep a 3:2 frame, the most common Unsplash landscape
-// ratio, so thumbnails crop symmetrically instead of jittering row to row.
+function isSelected(collections, id) {
+  var list = collections instanceof Array ? collections : []
+  for (var i = 0; i < list.length; i++) if (String(list[i].id) === String(id)) return true
+  return false
+}
+
+function toggleCollection(collections, collection) {
+  var list = []
+  var found = false
+  var current = collections instanceof Array ? collections : []
+  for (var i = 0; i < current.length; i++) {
+    if (String(current[i].id) === String(collection.id)) found = true
+    else list.push(current[i])
+  }
+  if (!found) list.push({ id: String(collection.id), title: String(collection.title || collection.id) })
+  return list
+}
+
+function selectionSummary(collections) {
+  var count = collections instanceof Array ? collections.length : 0
+  if (count === 0) return "All of Unsplash"
+  if (count === 1) return collections[0].title
+  return count + " collections"
+}
+
+// ------------------------------------------------------------------- history
+
+// unsplash-current.json holds a single entry in the same shape as one history
+// row, so it is parsed through the same normalizer.
+function parseCurrent(raw) {
+  var text = String(raw || "").replace(/^\s+|\s+$/g, "")
+  if (text === "") return null
+  var entries = parseHistory("[" + text + "]")
+  return entries.length > 0 ? entries[0] : null
+}
+
+function parseHistory(raw) {
+  var data
+  try {
+    data = JSON.parse(String(raw || ""))
+  } catch (e) {
+    return []
+  }
+  if (!(data instanceof Array)) return []
+
+  var out = []
+  for (var i = 0; i < data.length; i++) {
+    var entry = data[i]
+    if (!entry || !entry.id) continue
+    out.push({
+      id: String(entry.id),
+      authorName: String(entry.author || ""),
+      authorUsername: String(entry.username || ""),
+      htmlLink: String(entry.link || ""),
+      path: String(entry.path || ""),
+      previewUrl: String(entry.preview || ""),
+      rawUrl: String(entry.raw || ""),
+      appliedAt: String(entry.appliedAt || ""),
+      color: "#1b1b1b"
+    })
+  }
+  return out
+}
+
+// ---------------------------------------------------------------- grid math
+
+// Cells keep a 3:2 frame, the most common Unsplash landscape ratio, so
+// thumbnails crop symmetrically instead of jittering row to row.
 function cellWidth(available, columns, gap) {
   var cols = Math.max(1, parseInt(columns, 10) || 3)
   var total = Math.max(0, Number(available) || 0) - gap * (cols - 1)

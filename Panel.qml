@@ -5,8 +5,14 @@ import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 
-// Unsplash Wallpapers — a bar widget that browses Unsplash and applies photos
-// as the Omarchy background, modelled on Unsplash's own menu bar app.
+// Unsplash Wallpapers — a bar widget that puts Unsplash in the top-right
+// corner, modelled on Unsplash's own menu bar app.
+//
+// Three panes:
+//   Home         the wallpaper in use, with a refresh that draws one new
+//                random photo from the selected collections
+//   Collections  browse/search collections and choose which ones feed Home
+//   History      previously applied wallpapers; click to put one back
 //
 // The widget itself is the popup owner (the tailscale/agents pattern): one
 // QML file holds both the bar button and the KeyboardPanel it anchors, so the
@@ -27,50 +33,42 @@ Panel {
   readonly property bool configured: accessKey.length > 0
   readonly property string orientation: String(config.orientation || "landscape")
   readonly property int rotateMinutes: parseInt(config.rotateMinutes, 10) || 0
+  readonly property var selectedCollections: config.collections instanceof Array ? config.collections : []
 
   readonly property int columns: Math.max(2, parseInt(setting("columns", 3), 10) || 3)
-  readonly property int perPage: Math.max(6, parseInt(setting("perPage", 12), 10) || 12)
+  readonly property int perPage: Math.max(6, parseInt(setting("perPage", 20), 10) || 20)
 
   readonly property string pluginDir: String(Qt.resolvedUrl(".")).replace(/^file:\/\//, "")
 
-  // ----------------------------------------------------------- browse state
-  property string source: "topic:wallpapers"
-  property string query: ""
-  property var photos: []
-  property int cursorIndex: 0
-  property bool cursorActive: false
-  property bool loading: false
+  // ------------------------------------------------------------------ panes
+  property string pane: "home"
+  property bool setupOpen: false
+
+  // -------------------------------------------------------------- pane data
+  property var appliedPhoto: null
+  property var history: []
+  property var collections: []
+  property string collectionQuery: ""
+  property double collectionsFetchedAt: 0
+  readonly property int collectionsTtlMs: 30 * 60 * 1000
+
+  // ------------------------------------------------------------- status
+  // `busy` covers the whole New-photo path: the random request and the
+  // download that follows it are one action from the user's point of view.
+  property bool busy: false
+  property bool loadingCollections: false
   property string errorText: ""
 
-  // Feed cache: the demo API tier allows 50 requests/hour, so reopening the
-  // panel reuses the last response for a source until it goes stale.
-  property string cacheKey: ""
-  property double fetchedAt: 0
-  property bool refetchQueued: false
-  readonly property int cacheTtlMs: 10 * 60 * 1000
-
-  // Attribution for the photo currently on screen, restored from disk so it
-  // survives a shell restart.
-  property var appliedPhoto: null
-  readonly property string appliedId: appliedPhoto ? String(appliedPhoto.id || "") : ""
-
-  property bool setupOpen: false
-  property bool searchOpen: false
-  // Set the next successfully fetched photo as the wallpaper. Used when a
-  // rotation fires with no feed loaded yet.
-  property bool applyAfterFetch: false
+  // ------------------------------------------------------------- cursors
+  property bool cursorActive: false
+  property int historyIndex: 0
+  property int collectionIndex: 0
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color dim: Qt.darker(foreground, 1.5)
   readonly property color faint: Qt.darker(foreground, 2.0)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
-
-  readonly property var cursorPhoto: photos.length > 0
-    ? photos[Math.max(0, Math.min(cursorIndex, photos.length - 1))]
-    : null
-  // The footer describes whatever the eye is on: the grid cursor while
-  // browsing, otherwise the photo actually in use.
-  readonly property var footerPhoto: (cursorActive && cursorPhoto) ? cursorPhoto : (appliedPhoto || cursorPhoto)
+  readonly property string appliedId: appliedPhoto ? String(appliedPhoto.id || "") : ""
 
   // Native pixel width of the screen showing the panel — what the wallpaper
   // is downloaded at, so a HiDPI display is not handed a logical-size image.
@@ -88,10 +86,18 @@ Panel {
   onOpenedChanged: {
     if (!opened) return
     cursorActive = false
+    errorText = ""
     setupOpen = !configured
     if (panelFlick) panelFlick.contentY = 0
-    fetch(false)
+    if (pane === "collections") fetchCollections(false)
     Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
+  }
+
+  onPaneChanged: {
+    cursorActive = false
+    errorText = ""
+    if (panelFlick) panelFlick.contentY = 0
+    if (pane === "collections") fetchCollections(false)
   }
 
   function pluginBin(name) {
@@ -103,82 +109,39 @@ Panel {
     configProc.running = true
   }
 
-  // ----------------------------------------------------------------- fetch
-  function fetch(force) {
-    if (!configured) return
+  function saveConfigJson(key, value) {
+    configProc.command = [pluginBin("uw-config"), "setjson", key, JSON.stringify(value)]
+    configProc.running = true
+  }
 
-    var key = source + "|" + (source === "search" ? query : "")
-    if (source === "search" && query.replace(/^\s+|\s+$/g, "") === "") {
-      photos = []
-      return
-    }
+  function openUrl(url) {
+    if (!url) return
+    Util.execDetached("xdg-open " + Util.shellQuote(Model.withUtm(url)))
+  }
 
-    var fresh = cacheKey === key && photos.length > 0
-      && (Date.now() - fetchedAt) < cacheTtlMs
-    // Shuffle is never cached — asking for it again means wanting new photos.
-    if (!force && fresh && source !== "random") return
-
-    if (feedProc.running) {
-      // A source switch mid-flight queues one refetch rather than racing two
-      // curls whose responses could arrive out of order.
-      refetchQueued = true
-      return
-    }
-
-    loading = true
+  // ------------------------------------------------------------- new photo
+  //
+  // One request per photo change, exactly like the app this mirrors: ask the
+  // random endpoint for a single photo drawn from the selected collections.
+  function newPhoto() {
+    if (!configured || busy) return
+    busy = true
     errorText = ""
-    feedProc.command = ["curl", "-sS", "--max-time", "15",
+    randomProc.command = ["curl", "-sS", "--max-time", "15",
       "-H", "Authorization: Client-ID " + accessKey,
       "-w", "\n__HTTP__%{http_code}",
-      Model.endpointFor(source, query, 1, perPage, orientation)]
-    feedProc.running = true
+      Model.randomEndpoint(selectedCollections, orientation)]
+    randomProc.running = true
   }
 
-  function selectSource(id) {
-    if (id !== "search") searchOpen = false
-    source = id
-    cursorIndex = 0
-    cursorActive = false
-    saveConfig("source", id)
-    fetch(false)
-  }
-
-  function commitSearch() {
-    var text = searchField.text.replace(/^\s+|\s+$/g, "")
-    query = text
-    saveConfig("query", text)
-    if (text === "") {
-      selectSource("topic:wallpapers")
-      return
-    }
-    source = "search"
-    cursorIndex = 0
-    saveConfig("source", "search")
-    fetch(true)
-  }
-
-  function openSearch() {
-    searchOpen = true
-    Qt.callLater(function() {
-      searchField.text = root.query
-      searchField.selectAll()
-      searchField.forceActiveFocus()
-    })
-  }
-
-  function closeSearch() {
-    searchOpen = false
-    Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
-  }
-
-  // --------------------------------------------------------------- apply
-  function setWallpaper(photo) {
+  function applyPhoto(photo) {
     if (!photo || !photo.rawUrl) return
-
-    appliedPhoto = photo
+    busy = true
     setProc.command = [pluginBin("uw-set-wallpaper"),
       "--id", String(photo.id),
       "--url", Model.wallpaperUrl(photo.rawUrl, targetWidth),
+      "--raw-url", String(photo.rawUrl),
+      "--preview", String(photo.previewUrl || ""),
       "--width", String(targetWidth),
       "--author", String(photo.authorName || ""),
       "--author-username", String(photo.authorUsername || ""),
@@ -189,27 +152,42 @@ Panel {
     setProc.running = true
   }
 
-  // Pick a photo from the loaded feed rather than spending an API request —
-  // the browsing feed is already a fresh, source-filtered pool.
-  function shuffle() {
-    if (!configured) return
-    if (photos.length === 0) {
-      applyAfterFetch = true
-      fetch(true)
-      return
-    }
-    // Refresh a stale pool in the background so a long-running rotation does
-    // not keep recycling the same page all day.
-    if ((Date.now() - fetchedAt) > 6 * 60 * 60 * 1000) fetch(true)
+  // ----------------------------------------------------------- collections
+  function fetchCollections(force) {
+    if (!configured || loadingCollections) return
+    var fresh = collections.length > 0 && (Date.now() - collectionsFetchedAt) < collectionsTtlMs
+    if (!force && fresh) return
 
-    var candidates = []
-    for (var i = 0; i < photos.length; i++) {
-      if (String(photos[i].id) !== appliedId) candidates.push(photos[i])
-    }
-    if (candidates.length === 0) candidates = photos
-    setWallpaper(candidates[Math.floor(Math.random() * candidates.length)])
+    loadingCollections = true
+    errorText = ""
+    collectionsProc.command = ["curl", "-sS", "--max-time", "15",
+      "-H", "Authorization: Client-ID " + accessKey,
+      "-w", "\n__HTTP__%{http_code}",
+      Model.collectionsEndpoint(collectionQuery, perPage)]
+    collectionsProc.running = true
   }
 
+  function searchCollections() {
+    collectionQuery = collectionField.text.replace(/^\s+|\s+$/g, "")
+    collections = []
+    collectionIndex = 0
+    fetchCollections(true)
+    Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
+  }
+
+  function toggleCollection(collection) {
+    if (!collection) return
+    var next = Model.toggleCollection(selectedCollections, collection)
+    config = Object.assign({}, config, { collections: next })
+    saveConfigJson("collections", next)
+  }
+
+  function clearCollections() {
+    config = Object.assign({}, config, { collections: [] })
+    saveConfigJson("collections", [])
+  }
+
+  // -------------------------------------------------------------- settings
   function cycleRotation() {
     var next = Model.nextRotateMinutes(rotateMinutes)
     config = Object.assign({}, config, { rotateMinutes: next })
@@ -221,7 +199,6 @@ Panel {
     var next = order[(order.indexOf(orientation) + 1) % order.length]
     config = Object.assign({}, config, { orientation: next })
     saveConfig("orientation", next)
-    fetch(true)
   }
 
   function saveAccessKey() {
@@ -231,29 +208,39 @@ Panel {
     saveConfig("accessKey", value)
     setupOpen = false
     errorText = ""
-    Qt.callLater(function() {
-      if (keyCatcher) keyCatcher.forceActiveFocus()
-      root.fetch(true)
-    })
+    Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
   }
 
-  function openUrl(url) {
-    if (!url || !bar) return
-    bar.run("xdg-open " + bar.shellQuote(Model.withUtm(url)))
+  // ------------------------------------------------------------ cursor nav
+  function moveCursor(dx, dy) {
+    if (pane === "history") {
+      if (history.length === 0) return
+      historyIndex = Model.moveCursor(historyIndex, dx, dy, history.length, columns)
+    } else if (pane === "collections") {
+      if (collections.length === 0) return
+      // A single-column list: vertical movement only.
+      collectionIndex = Model.moveCursor(collectionIndex, 0, dy !== 0 ? dy : dx, collections.length, 1)
+    }
   }
 
-  // ------------------------------------------------------------ processes
+  function activateCursor() {
+    if (pane === "history" && history.length > 0) {
+      applyPhoto(history[Math.max(0, Math.min(historyIndex, history.length - 1))])
+    } else if (pane === "collections" && collections.length > 0) {
+      toggleCollection(collections[Math.max(0, Math.min(collectionIndex, collections.length - 1))])
+    } else if (pane === "home") {
+      newPhoto()
+    }
+  }
+
+  // ------------------------------------------------------------ file state
   FileView {
     id: configFile
     path: Quickshell.env("HOME") + "/.local/state/omarchy/settings/unsplash.json"
     watchChanges: true
     printErrors: false
     onFileChanged: reload()
-    onLoaded: {
-      root.config = Model.parseConfig(text())
-      if (root.source === "topic:wallpapers" && root.config.source) root.source = String(root.config.source)
-      if (root.query === "") root.query = String(root.config.query || "")
-    }
+    onLoaded: root.config = Model.parseConfig(text())
     onLoadFailed: root.config = Model.defaultConfig()
   }
 
@@ -263,70 +250,83 @@ Panel {
     watchChanges: true
     printErrors: false
     onFileChanged: reload()
-    onLoaded: {
-      try {
-        var data = JSON.parse(text())
-        if (data && data.id) {
-          root.appliedPhoto = {
-            id: String(data.id),
-            authorName: String(data.author || ""),
-            authorUsername: String(data.username || ""),
-            htmlLink: String(data.link || ""),
-            rawUrl: "",
-            thumbUrl: ""
-          }
+    onLoaded: root.appliedPhoto = Model.parseCurrent(text())
+    onLoadFailed: root.appliedPhoto = null
+  }
+
+  FileView {
+    id: historyFile
+    path: Quickshell.env("HOME") + "/.local/state/omarchy/settings/unsplash-history.json"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: root.history = Model.parseHistory(text())
+    onLoadFailed: root.history = []
+  }
+
+  // -------------------------------------------------------------- processes
+  Process {
+    id: randomProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var response = Model.parseHttp(text)
+        if (response.status !== 200) {
+          root.busy = false
+          root.errorText = Model.randomErrorFor(response.status, response.body,
+            root.selectedCollections.length > 0)
+          return
         }
-      } catch (e) {
-        // No applied photo yet, or a partially written file — the footer
-        // simply falls back to the grid cursor.
+        var photos = Model.normalizePhotos(response.body)
+        if (photos.length === 0) {
+          root.busy = false
+          root.errorText = "Unsplash returned no photo. Try again."
+          return
+        }
+        // busy stays set: applyPhoto continues the same user action.
+        root.applyPhoto(photos[0])
+      }
+    }
+    onExited: function(exitCode) {
+      // curl itself failed, so the collector never saw a status line.
+      if (exitCode !== 0 && !setProc.running) {
+        root.busy = false
+        if (root.errorText === "") root.errorText = Model.errorFor(0, "")
       }
     }
   }
 
   Process {
-    id: feedProc
+    id: collectionsProc
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
         var response = Model.parseHttp(text)
-        root.loading = false
-
+        root.loadingCollections = false
         if (response.status !== 200) {
           root.errorText = Model.errorFor(response.status, response.body)
           return
         }
-
-        var list = Model.normalizePhotos(response.body)
-        if (list.length === 0) {
-          root.errorText = "No photos came back for this source."
-          return
-        }
-
-        root.photos = list
-        root.cursorIndex = 0
-        root.errorText = ""
-        root.cacheKey = root.source + "|" + (root.source === "search" ? root.query : "")
-        root.fetchedAt = Date.now()
-
-        if (root.applyAfterFetch) {
-          root.applyAfterFetch = false
-          root.setWallpaper(list[Math.floor(Math.random() * list.length)])
-        }
+        root.collections = Model.normalizeCollections(response.body)
+        root.collectionIndex = 0
+        root.collectionsFetchedAt = Date.now()
+        if (root.collections.length === 0) root.errorText = "No collections matched that search."
       }
     }
     onExited: function(exitCode) {
-      root.loading = false
-      // curl could not run or the transfer failed outright; the collector
-      // above never saw a status line to report.
+      root.loadingCollections = false
       if (exitCode !== 0 && root.errorText === "") root.errorText = Model.errorFor(0, "")
-      if (root.refetchQueued) {
-        root.refetchQueued = false
-        Qt.callLater(function() { root.fetch(true) })
-      }
     }
   }
 
-  Process { id: setProc }
+  Process {
+    id: setProc
+    onExited: function(exitCode) {
+      root.busy = false
+      if (exitCode !== 0) root.errorText = "Could not apply that wallpaper."
+    }
+  }
+
   Process { id: configProc }
 
   Timer {
@@ -334,7 +334,7 @@ Panel {
     interval: Math.max(1, root.rotateMinutes) * 60 * 1000
     running: root.rotateMinutes > 0
     repeat: true
-    onTriggered: root.shuffle()
+    onTriggered: root.newPhoto()
   }
 
   IpcHandler {
@@ -345,8 +345,19 @@ Panel {
     function show(): void { root.open() }
     function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
-    function shuffle(): string { root.shuffle(); return "ok" }
-    function refresh(): string { root.fetch(true); return "ok" }
+    function next(): string { root.newPhoto(); return "ok" }
+    function shuffle(): string { root.newPhoto(); return "ok" }
+
+    // Open the panel straight onto one pane, so a keybinding can jump to
+    // History or Collections without clicking through Home.
+    function showPane(name: string): string {
+      var target = String(name || "").toLowerCase()
+      if (target !== "home" && target !== "collections" && target !== "history") return "unknown pane"
+      root.pane = target
+      root.setupOpen = false
+      root.open()
+      return "ok"
+    }
   }
 
   // ----------------------------------------------------------- bar button
@@ -358,8 +369,7 @@ Panel {
     tooltipText: root.opened ? "" : "Unsplash wallpapers"
 
     onPressed: function(buttonCode) {
-      if (buttonCode === Qt.RightButton) root.shuffle()
-      else if (buttonCode === Qt.MiddleButton) root.fetch(true)
+      if (buttonCode === Qt.RightButton) root.newPhoto()
       else root.toggle()
     }
   }
@@ -372,30 +382,34 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(460))
-    contentHeight: panel.fittedContentHeight(contentColumn.implicitHeight, Style.space(640))
+    contentWidth: panel.fittedContentWidth(Style.space(440))
+    contentHeight: panel.fittedContentHeight(contentColumn.implicitHeight, Style.space(660))
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: searchField.activeFocus || keyField.activeFocus
+      blocked: keyField.activeFocus || collectionField.activeFocus
 
       onMoveRequested: function(dx, dy) {
-        if (root.photos.length === 0) return
         if (!root.cursorActive) {
           root.cursorActive = true
           return
         }
-        root.cursorIndex = Model.moveCursor(root.cursorIndex, dx, dy, root.photos.length, root.columns)
+        root.moveCursor(dx, dy)
       }
-      onActivateRequested: if (root.cursorActive && root.cursorPhoto) root.setWallpaper(root.cursorPhoto)
+      onActivateRequested: root.activateCursor()
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) {
-        if (t === "/") root.openSearch()
-        else if (t === "r" || t === "R") root.fetch(true)
-        else if (t === "s" || t === "S") root.shuffle()
-        else if (t === "o" || t === "O") root.openUrl(root.footerPhoto ? root.footerPhoto.htmlLink : "")
+        if (t === "n" || t === "N") root.newPhoto()
+        else if (t === "1") root.pane = "home"
+        else if (t === "2") root.pane = "collections"
+        else if (t === "3") root.pane = "history"
+        else if (t === "o" || t === "O") root.openUrl(root.appliedPhoto ? root.appliedPhoto.htmlLink : "")
+        else if (t === "/" && root.pane === "collections") collectionField.forceActiveFocus()
+        else if (t === "r" || t === "R") {
+          if (root.pane === "collections") root.fetchCollections(true)
+        }
       }
 
       Flickable {
@@ -413,7 +427,7 @@ Panel {
           width: panelFlick.width
           spacing: Style.spacing.xl
 
-          // ---- header ------------------------------------------------
+          // ================================================ header
           Item {
             width: parent.width
             height: Math.max(titleRow.implicitHeight, headerActions.implicitHeight)
@@ -437,10 +451,12 @@ Panel {
               Text {
                 anchors.verticalCenter: parent.verticalCenter
                 visible: root.configured && !root.setupOpen
-                text: Model.labelForSource(root.source, root.query)
+                text: Model.selectionSummary(root.selectedCollections)
                 color: root.faint
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
+                elide: Text.ElideRight
+                width: Math.min(implicitWidth, Style.space(190))
               }
             }
 
@@ -452,39 +468,19 @@ Panel {
 
               Text {
                 anchors.verticalCenter: parent.verticalCenter
-                visible: root.loading
+                visible: root.busy || root.loadingCollections
                 text: "󰦖"
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
 
                 RotationAnimator on rotation {
-                  running: root.loading
+                  running: root.busy || root.loadingCollections
                   from: 0
                   to: 360
                   duration: 900
                   loops: Animation.Infinite
                 }
-              }
-
-              PanelActionButton {
-                anchors.verticalCenter: parent.verticalCenter
-                visible: root.configured
-                iconText: ""
-                tooltipText: "Search photos  (/)"
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                onClicked: root.searchOpen ? root.closeSearch() : root.openSearch()
-              }
-
-              PanelActionButton {
-                anchors.verticalCenter: parent.verticalCenter
-                visible: root.configured
-                iconText: "󰑐"
-                tooltipText: "Reload this source  (r)"
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                onClicked: root.fetch(true)
               }
 
               PanelActionButton {
@@ -504,7 +500,34 @@ Panel {
             }
           }
 
-          // ---- setup / settings card ---------------------------------
+          // ================================================ tabs
+          Row {
+            width: parent.width
+            visible: root.configured && !root.setupOpen
+            spacing: Style.spacing.sm
+
+            Repeater {
+              model: [
+                { id: "home", label: "Home" },
+                { id: "collections", label: "Collections" },
+                { id: "history", label: "History" }
+              ]
+
+              Button {
+                required property var modelData
+                text: modelData.label
+                selected: root.pane === modelData.id
+                bordered: root.pane === modelData.id
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                verticalPadding: Style.spacing.sm
+                onClicked: root.pane = modelData.id
+              }
+            }
+          }
+
+          // ================================================ settings card
           Column {
             width: parent.width
             visible: root.setupOpen
@@ -562,6 +585,7 @@ Panel {
 
               Button {
                 text: "Get a key"
+                tooltipText: "Opens unsplash.com/oauth/applications"
                 bordered: true
                 foreground: root.foreground
                 fontFamily: root.fontFamily
@@ -578,59 +602,7 @@ Panel {
             }
           }
 
-          // ---- source chips -------------------------------------------
-          Flow {
-            width: parent.width
-            visible: root.configured && !root.setupOpen
-            spacing: Style.spacing.sm
-
-            Repeater {
-              model: Model.sources()
-
-              Button {
-                required property var modelData
-                text: modelData.label
-                selected: root.source === modelData.id
-                bordered: root.source === modelData.id
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                fontSize: Style.font.caption
-                verticalPadding: Style.spacing.sm
-                onClicked: {
-                  if (modelData.id === "random") {
-                    root.source = "random"
-                    root.saveConfig("source", "random")
-                    root.fetch(true)
-                  } else {
-                    root.selectSource(modelData.id)
-                  }
-                }
-              }
-            }
-          }
-
-          // ---- search field -------------------------------------------
-          TextField {
-            id: searchField
-            width: parent.width
-            visible: root.configured && !root.setupOpen && root.searchOpen
-            placeholderText: "Search Unsplash…"
-            foreground: root.foreground
-            font.family: root.fontFamily
-
-            Keys.onPressed: function(event) {
-              if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-                root.commitSearch()
-                root.closeSearch()
-                event.accepted = true
-              } else if (event.key === Qt.Key_Escape) {
-                root.closeSearch()
-                event.accepted = true
-              }
-            }
-          }
-
-          // ---- error --------------------------------------------------
+          // ================================================ error
           Text {
             width: parent.width
             visible: root.errorText !== "" && !root.setupOpen
@@ -641,203 +613,534 @@ Panel {
             wrapMode: Text.WordWrap
           }
 
-          // ---- photo grid ---------------------------------------------
-          Grid {
-            id: photoGrid
+          // ================================================ HOME pane
+          Column {
             width: parent.width
-            visible: root.configured && !root.setupOpen && root.photos.length > 0
-            columns: root.columns
-            spacing: Style.spacing.sm
+            visible: root.configured && !root.setupOpen && root.pane === "home"
+            spacing: Style.spacing.lg
 
-            readonly property int cellW: Model.cellWidth(width, root.columns, spacing)
-            readonly property int cellH: Model.cellHeight(cellW)
+            // The wallpaper currently on screen, big. Clicking opens it on
+            // Unsplash — the same affordance as the credit line.
+            Rectangle {
+              id: hero
+              width: parent.width
+              height: Math.round(width * 0.625)
+              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
+              clip: true
 
-            Repeater {
-              model: root.photos
+              property bool fellBack: false
+
+              Image {
+                id: heroImage
+                anchors.fill: parent
+                source: Model.heroSource(root.appliedPhoto)
+                fillMode: Image.PreserveAspectCrop
+                asynchronous: true
+                cache: true
+                sourceSize.width: hero.width * 2
+                opacity: status === Image.Ready ? 1 : 0
+
+                Behavior on opacity {
+                  NumberAnimation { duration: 200; easing.type: Easing.OutCubic }
+                }
+
+                // The local copy is preferred, but pruning eventually removes
+                // it; fall back to the CDN preview rather than showing a hole.
+                onStatusChanged: {
+                  if (status !== Image.Error || hero.fellBack) return
+                  var preview = root.appliedPhoto ? String(root.appliedPhoto.previewUrl || "") : ""
+                  if (preview === "") return
+                  hero.fellBack = true
+                  source = preview
+                }
+              }
+
+              Connections {
+                target: root
+                function onAppliedPhotoChanged() { hero.fellBack = false }
+              }
+
+              Text {
+                anchors.centerIn: parent
+                width: parent.width - Style.space(40)
+                visible: !root.appliedPhoto && !root.busy
+                text: "No wallpaper set yet.\nHit New photo to pull one from Unsplash."
+                color: root.faint
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+              }
 
               Rectangle {
-                id: cell
-                required property var modelData
-                required property int index
+                anchors.fill: parent
+                visible: root.busy
+                color: Qt.rgba(0, 0, 0, 0.5)
 
-                width: photoGrid.cellW
-                height: photoGrid.cellH
-                // Unsplash ships each photo's dominant color; using it as the
-                // cell background means the grid reads as photos immediately
-                // instead of flashing empty boxes.
-                color: modelData.color
-                clip: true
+                Text {
+                  anchors.centerIn: parent
+                  text: "󰦖"
+                  color: "white"
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.heading
 
-                readonly property bool hot: cellMouse.containsMouse
-                  || (root.cursorActive && root.cursorIndex === cell.index)
-                readonly property bool isApplied: root.appliedId !== "" && String(modelData.id) === root.appliedId
-
-                Image {
-                  anchors.fill: parent
-                  source: modelData.thumbUrl
-                  fillMode: Image.PreserveAspectCrop
-                  asynchronous: true
-                  cache: true
-                  sourceSize.width: photoGrid.cellW * 2
-                  opacity: status === Image.Ready ? 1 : 0
-
-                  Behavior on opacity {
-                    NumberAnimation { duration: 160; easing.type: Easing.OutCubic }
+                  RotationAnimator on rotation {
+                    running: root.busy
+                    from: 0
+                    to: 360
+                    duration: 900
+                    loops: Animation.Infinite
                   }
                 }
+              }
 
-                // Hover scrim + hint, so a cell reads as clickable.
-                Rectangle {
-                  anchors.fill: parent
-                  visible: cell.hot
-                  color: Qt.rgba(0, 0, 0, 0.45)
+              MouseArea {
+                anchors.fill: parent
+                enabled: !!root.appliedPhoto
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.openUrl(root.appliedPhoto ? root.appliedPhoto.htmlLink : "")
+              }
+            }
 
-                  Text {
-                    anchors.centerIn: parent
-                    text: cell.isApplied ? "Current" : "Set"
-                    color: "white"
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
-                    font.bold: true
-                  }
-                }
+            // Attribution, as Unsplash's API guidelines require.
+            Row {
+              width: parent.width
+              spacing: Style.spacing.sm
+              visible: !!root.appliedPhoto
 
-                // Badge on the photo currently in use.
-                Rectangle {
-                  visible: cell.isApplied && !cell.hot
-                  anchors.top: parent.top
-                  anchors.right: parent.right
-                  width: Style.space(16)
-                  height: Style.space(16)
-                  color: Qt.rgba(0, 0, 0, 0.55)
+              TapHandler {
+                onTapped: root.openUrl(root.appliedPhoto ? root.appliedPhoto.htmlLink : "")
+              }
+              HoverHandler {
+                cursorShape: Qt.PointingHandCursor
+              }
 
-                  Text {
-                    anchors.centerIn: parent
-                    text: "󰄬"
-                    color: "white"
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
-                  }
-                }
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: "󰋩"
+                color: root.faint
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+              }
 
-                Rectangle {
-                  anchors.fill: parent
-                  color: "transparent"
-                  border.width: cell.hot ? Math.max(1, Style.space(2)) : 0
-                  border.color: Style.hoverStateColor(root.foreground, Color.accent)
-                }
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                width: parent.width - Style.space(24)
+                text: Model.attributionText(root.appliedPhoto)
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                elide: Text.ElideRight
+              }
+            }
 
-                MouseArea {
-                  id: cellMouse
-                  anchors.fill: parent
-                  hoverEnabled: true
-                  cursorShape: Qt.PointingHandCursor
-                  acceptedButtons: Qt.LeftButton | Qt.RightButton
+            Row {
+              width: parent.width
+              spacing: Style.spacing.sm
 
-                  onContainsMouseChanged: if (containsMouse) {
-                    root.cursorActive = true
-                    root.cursorIndex = cell.index
-                  }
-                  onClicked: function(mouse) {
-                    if (mouse.button === Qt.RightButton) root.openUrl(cell.modelData.htmlLink)
-                    else root.setWallpaper(cell.modelData)
-                  }
-                }
+              Button {
+                text: "󰑐  New photo"
+                tooltipText: "Draw a new random photo from " + Model.selectionSummary(root.selectedCollections) + "  (n)"
+                bordered: true
+                enabled: !root.busy
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                verticalPadding: Style.spacing.md
+                onClicked: root.newPhoto()
+              }
+
+              Button {
+                text: "Auto: " + Model.rotateLabel(root.rotateMinutes)
+                tooltipText: "How often a new photo is drawn automatically"
+                bordered: true
+                selected: root.rotateMinutes > 0
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                verticalPadding: Style.spacing.md
+                onClicked: root.cycleRotation()
+              }
+
+              Button {
+                visible: !!root.appliedPhoto
+                text: "Open ↗"
+                tooltipText: "Open this photo on unsplash.com  (o)"
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                verticalPadding: Style.spacing.md
+                onClicked: root.openUrl(root.appliedPhoto ? root.appliedPhoto.htmlLink : "")
               }
             }
           }
 
-          // ---- empty state --------------------------------------------
-          Text {
-            width: parent.width
-            visible: root.configured && !root.setupOpen && root.photos.length === 0
-              && !root.loading && root.errorText === ""
-            text: "Nothing loaded yet."
-            color: root.faint
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.bodySmall
-            font.italic: true
-          }
-
-          // ---- footer --------------------------------------------------
+          // ================================================ COLLECTIONS pane
           Column {
             width: parent.width
-            visible: root.configured && !root.setupOpen
+            visible: root.configured && !root.setupOpen && root.pane === "collections"
             spacing: Style.spacing.lg
 
-            PanelSeparator { foreground: root.foreground }
-
-            Item {
+            Text {
               width: parent.width
-              height: Math.max(credit.implicitHeight, footerActions.implicitHeight)
+              text: "Photos are drawn from the collections you select here."
+              color: root.faint
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
 
-              // Attribution, as Unsplash's API guidelines require. Clicking
-              // opens the photo page with the referral parameters attached.
-              Row {
-                id: credit
-                anchors.left: parent.left
-                anchors.verticalCenter: parent.verticalCenter
-                width: parent.width - footerActions.width - Style.spacing.md
-                spacing: Style.spacing.sm
-                visible: !!root.footerPhoto
+            Row {
+              width: parent.width
+              spacing: Style.spacing.md
 
-                TapHandler {
-                  onTapped: root.openUrl(root.footerPhoto ? root.footerPhoto.htmlLink : "")
-                }
-                HoverHandler {
-                  cursorShape: Qt.PointingHandCursor
-                }
+              TextField {
+                id: collectionField
+                width: parent.width - clearButton.implicitWidth - Style.spacing.md
+                placeholderText: "Search collections…"
+                foreground: root.foreground
+                font.family: root.fontFamily
 
-                Text {
-                  anchors.verticalCenter: parent.verticalCenter
-                  text: "󰋩"
-                  color: root.faint
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.bodySmall
-                }
-
-                Text {
-                  anchors.verticalCenter: parent.verticalCenter
-                  width: credit.width - Style.space(24)
-                  text: Model.attributionText(root.footerPhoto)
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.bodySmall
-                  elide: Text.ElideRight
+                Keys.onPressed: function(event) {
+                  if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                    root.searchCollections()
+                    event.accepted = true
+                  } else if (event.key === Qt.Key_Escape) {
+                    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+                    event.accepted = true
+                  }
                 }
               }
 
-              Row {
-                id: footerActions
-                anchors.right: parent.right
+              Button {
+                id: clearButton
                 anchors.verticalCenter: parent.verticalCenter
-                spacing: Style.spacing.sm
+                text: "Clear"
+                tooltipText: "Deselect every collection and use all of Unsplash"
+                bordered: true
+                enabled: root.selectedCollections.length > 0
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                verticalPadding: Style.spacing.sm
+                onClicked: root.clearCollections()
+              }
+            }
 
-                Button {
-                  anchors.verticalCenter: parent.verticalCenter
-                  text: "Auto: " + Model.rotateLabel(root.rotateMinutes)
-                  tooltipText: "How often to switch to another photo from this source"
-                  bordered: true
-                  selected: root.rotateMinutes > 0
-                  foreground: root.foreground
-                  fontFamily: root.fontFamily
-                  fontSize: Style.font.caption
-                  verticalPadding: Style.spacing.sm
-                  onClicked: root.cycleRotation()
-                }
+            // Selected collections are pinned here so a choice made from an
+            // earlier search stays visible and removable after the list moves on.
+            Column {
+              width: parent.width
+              visible: root.selectedCollections.length > 0
+              spacing: Style.spacing.sm
 
-                Button {
-                  anchors.verticalCenter: parent.verticalCenter
-                  text: "Shuffle"
-                  tooltipText: "Set a random photo from this source  (s)"
-                  bordered: true
-                  foreground: root.foreground
-                  fontFamily: root.fontFamily
-                  fontSize: Style.font.caption
-                  verticalPadding: Style.spacing.sm
-                  onClicked: root.shuffle()
+              PanelSectionHeader {
+                text: "SELECTED"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+              }
+
+              Repeater {
+                model: root.selectedCollections
+
+                Rectangle {
+                  required property var modelData
+                  width: parent.width
+                  height: selectedRow.implicitHeight + Style.spacing.lg
+                  color: Style.selectedFillFor(root.foreground, Color.accent)
+
+                  Row {
+                    id: selectedRow
+                    x: Style.spacing.rowPaddingX
+                    // Width is set from the row rectangle, never from this
+                    // Row's own children — a Row sizes itself from them, so
+                    // a child binding back to parent.width would loop.
+                    width: parent.width - Style.spacing.rowPaddingX * 2
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: Style.spacing.md
+
+                    Text {
+                      id: selectedCheck
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: "󰄬"
+                      color: root.foreground
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.bodySmall
+                    }
+
+                    Text {
+                      anchors.verticalCenter: parent.verticalCenter
+                      width: selectedRow.width - selectedCheck.width - Style.spacing.md
+                      text: modelData.title
+                      color: root.foreground
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.bodySmall
+                      elide: Text.ElideRight
+                    }
+                  }
+
+                  MouseArea {
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.toggleCollection(modelData)
+                  }
                 }
               }
+            }
+
+            PanelSectionHeader {
+              text: root.collectionQuery === "" ? "BROWSE" : "RESULTS"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Column {
+              width: parent.width
+              spacing: Style.spacing.sm
+
+              Repeater {
+                model: root.collections
+
+                Rectangle {
+                  id: collectionRow
+                  required property var modelData
+                  required property int index
+
+                  width: parent.width
+                  height: Style.space(46)
+
+                  readonly property bool picked: Model.isSelected(root.selectedCollections, modelData.id)
+                  readonly property bool hot: rowMouse.containsMouse
+                    || (root.cursorActive && root.pane === "collections" && root.collectionIndex === index)
+
+                  color: hot ? Style.hoverFillFor(root.foreground, Color.accent)
+                    : (picked ? Style.selectedFillFor(root.foreground, Color.accent) : "transparent")
+
+                  Row {
+                    id: collectionInner
+                    // Sized from the row rectangle rather than its own
+                    // children, so the text column below can claim the
+                    // remaining space without a binding loop.
+                    width: parent.width - Style.spacing.rowPaddingX
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: Style.spacing.md
+
+                    Rectangle {
+                      anchors.verticalCenter: parent.verticalCenter
+                      width: Style.space(54)
+                      height: Style.space(36)
+                      color: modelData.coverColor
+                      clip: true
+
+                      Image {
+                        anchors.fill: parent
+                        source: modelData.coverUrl
+                        fillMode: Image.PreserveAspectCrop
+                        asynchronous: true
+                        cache: true
+                        sourceSize.width: Style.space(54) * 2
+                      }
+                    }
+
+                    Column {
+                      anchors.verticalCenter: parent.verticalCenter
+                      width: collectionInner.width - Style.space(54) - Style.space(20)
+                        - Style.spacing.md * 2
+                      spacing: Style.spacing.xxs
+
+                      Text {
+                        width: parent.width
+                        text: modelData.title
+                        color: root.foreground
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.bodySmall
+                        elide: Text.ElideRight
+                      }
+
+                      Text {
+                        width: parent.width
+                        text: modelData.totalPhotos + " photos"
+                          + (modelData.curator !== "" ? " · " + modelData.curator : "")
+                        color: root.faint
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                        elide: Text.ElideRight
+                      }
+                    }
+
+                    Text {
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: collectionRow.picked ? "󰄬" : "󰝦"
+                      color: collectionRow.picked ? root.foreground : root.faint
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.body
+                    }
+                  }
+
+                  MouseArea {
+                    id: rowMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onContainsMouseChanged: if (containsMouse) {
+                      root.cursorActive = true
+                      root.collectionIndex = collectionRow.index
+                    }
+                    onClicked: root.toggleCollection(collectionRow.modelData)
+                  }
+                }
+              }
+            }
+
+            Text {
+              width: parent.width
+              visible: root.collections.length === 0 && !root.loadingCollections
+              text: "No collections loaded."
+              color: root.faint
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              font.italic: true
+            }
+          }
+
+          // ================================================ HISTORY pane
+          Column {
+            width: parent.width
+            visible: root.configured && !root.setupOpen && root.pane === "history"
+            spacing: Style.spacing.lg
+
+            Text {
+              width: parent.width
+              text: "Wallpapers you have used. Click one to put it back."
+              color: root.faint
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Grid {
+              id: historyGrid
+              width: parent.width
+              visible: root.history.length > 0
+              columns: root.columns
+              spacing: Style.spacing.sm
+
+              readonly property int cellW: Model.cellWidth(width, root.columns, spacing)
+              readonly property int cellH: Model.cellHeight(cellW)
+
+              Repeater {
+                model: root.history
+
+                Rectangle {
+                  id: historyCell
+                  required property var modelData
+                  required property int index
+
+                  width: historyGrid.cellW
+                  height: historyGrid.cellH
+                  color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
+                  clip: true
+
+                  property bool fellBack: false
+
+                  readonly property bool hot: historyMouse.containsMouse
+                    || (root.cursorActive && root.pane === "history" && root.historyIndex === index)
+                  readonly property bool isApplied: root.appliedId !== "" && String(modelData.id) === root.appliedId
+
+                  Image {
+                    anchors.fill: parent
+                    source: Model.heroSource(historyCell.modelData)
+                    fillMode: Image.PreserveAspectCrop
+                    asynchronous: true
+                    cache: true
+                    sourceSize.width: historyGrid.cellW * 2
+                    opacity: status === Image.Ready ? 1 : 0
+
+                    Behavior on opacity {
+                      NumberAnimation { duration: 160; easing.type: Easing.OutCubic }
+                    }
+
+                    // Older entries lose their local file to pruning; the CDN
+                    // preview keeps the thumbnail alive.
+                    onStatusChanged: {
+                      if (status !== Image.Error || historyCell.fellBack) return
+                      var preview = String(historyCell.modelData.previewUrl || "")
+                      if (preview === "") return
+                      historyCell.fellBack = true
+                      source = preview
+                    }
+                  }
+
+                  Rectangle {
+                    anchors.fill: parent
+                    visible: historyCell.hot
+                    color: Qt.rgba(0, 0, 0, 0.45)
+
+                    Text {
+                      anchors.centerIn: parent
+                      text: historyCell.isApplied ? "Current" : "Set again"
+                      color: "white"
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      font.bold: true
+                    }
+                  }
+
+                  Rectangle {
+                    visible: historyCell.isApplied && !historyCell.hot
+                    anchors.top: parent.top
+                    anchors.right: parent.right
+                    width: Style.space(16)
+                    height: Style.space(16)
+                    color: Qt.rgba(0, 0, 0, 0.55)
+
+                    Text {
+                      anchors.centerIn: parent
+                      text: "󰄬"
+                      color: "white"
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                    }
+                  }
+
+                  Rectangle {
+                    anchors.fill: parent
+                    color: "transparent"
+                    border.width: historyCell.hot ? Math.max(1, Style.space(2)) : 0
+                    border.color: Style.hoverStateColor(root.foreground, Color.accent)
+                  }
+
+                  MouseArea {
+                    id: historyMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    acceptedButtons: Qt.LeftButton | Qt.RightButton
+
+                    onContainsMouseChanged: if (containsMouse) {
+                      root.cursorActive = true
+                      root.historyIndex = historyCell.index
+                    }
+                    onClicked: function(mouse) {
+                      if (mouse.button === Qt.RightButton) root.openUrl(historyCell.modelData.htmlLink)
+                      else root.applyPhoto(historyCell.modelData)
+                    }
+                  }
+                }
+              }
+            }
+
+            Text {
+              width: parent.width
+              visible: root.history.length === 0
+              text: "No wallpapers applied yet."
+              color: root.faint
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              font.italic: true
             }
           }
         }

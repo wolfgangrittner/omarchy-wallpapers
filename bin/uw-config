@@ -4,9 +4,10 @@
 # The config lives under ~/.local/state (not ~/.config) so an access key
 # never lands in a dotfiles repo by accident. The file is kept 0600.
 #
-#   uw-config get              print the whole config as JSON
-#   uw-config set <key> <val>  set one key (numeric values stay numeric)
-#   uw-config path             print the config path
+#   uw-config get                print the whole config as JSON
+#   uw-config set <key> <val>    set one key (numeric values stay numeric)
+#   uw-config setjson <key> <j>  set one key to a raw JSON value (arrays etc.)
+#   uw-config path               print the config path
 
 set -euo pipefail
 
@@ -50,8 +51,26 @@ set)
   mv "$tmp" "$CONFIG"
   ;;
 
+setjson)
+  key="${2:?usage: uw-config setjson <key> <json>}"
+  value="${3-}"
+  ensure_config
+
+  # Reject malformed JSON up front so a bad argument cannot truncate the
+  # config to an empty file.
+  if ! jq -e . >/dev/null 2>&1 <<<"$value"; then
+    echo "not valid JSON: $value" >&2
+    exit 1
+  fi
+
+  tmp="$(mktemp "${CONFIG}.XXXXXX")"
+  jq --arg k "$key" --argjson v "$value" '.[$k] = $v' "$CONFIG" >"$tmp"
+  chmod 600 "$tmp"
+  mv "$tmp" "$CONFIG"
+  ;;
+
 *)
-  echo "usage: uw-config [get|set <key> <value>|path]" >&2
+  echo "usage: uw-config [get|set <key> <value>|setjson <key> <json>|path]" >&2
   exit 1
   ;;
 esac

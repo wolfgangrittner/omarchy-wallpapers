@@ -5,9 +5,13 @@
 # (~/.config/omarchy/backgrounds/<theme>/) so it also joins the rotation that
 # `omarchy theme bg next` walks, then handed to omarchy-theme-bg-set.
 #
-#   uw-set-wallpaper --id <id> --url <raw-url> [--width N] [--author NAME]
+#   uw-set-wallpaper --id <id> --url <sized-url> [--width N] [--author NAME]
 #                    [--link URL] [--download-location URL] [--key CLIENT_ID]
-#                    [--keep N]
+#                    [--keep N] [--preview URL] [--raw-url URL]
+#
+# --preview and --raw-url are recorded but never downloaded here: the panel
+# uses them to render history entries whose local file has been pruned, and to
+# re-apply them without another API lookup.
 
 set -euo pipefail
 
@@ -20,6 +24,8 @@ link=""
 download_location=""
 access_key=""
 keep="10"
+preview=""
+raw_url=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -32,6 +38,8 @@ while [[ $# -gt 0 ]]; do
   --download-location) download_location="${2-}"; shift 2 ;;
   --key) access_key="${2-}"; shift 2 ;;
   --keep) keep="${2-}"; shift 2 ;;
+  --preview) preview="${2-}"; shift 2 ;;
+  --raw-url) raw_url="${2-}"; shift 2 ;;
   *)
     echo "unknown argument: $1" >&2
     exit 1
@@ -89,16 +97,37 @@ fi
 
 # Attribution for the currently applied photo, so the panel can show it after
 # a restart and other scripts can read it.
-state_file="$HOME/.local/state/omarchy/settings/unsplash-current.json"
-mkdir -p "$(dirname "$state_file")"
-jq -n \
+settings_dir="$HOME/.local/state/omarchy/settings"
+state_file="$settings_dir/unsplash-current.json"
+history_file="$settings_dir/unsplash-history.json"
+mkdir -p "$settings_dir"
+
+entry="$(jq -n \
   --arg id "$id" \
   --arg author "$author" \
   --arg username "$author_username" \
   --arg link "$link" \
   --arg path "$dest" \
-  '{id: $id, author: $author, username: $username, link: $link, path: $path}' \
-  >"$state_file"
+  --arg preview "$preview" \
+  --arg raw "$raw_url" \
+  --arg appliedAt "$(date -Iseconds)" \
+  '{id: $id, author: $author, username: $username, link: $link,
+    path: $path, preview: $preview, raw: $raw, appliedAt: $appliedAt}')"
+
+printf '%s\n' "$entry" >"$state_file"
+
+# Prepend to the history, de-duplicating by photo id so re-applying an old
+# wallpaper moves it back to the front instead of adding a second row. A
+# corrupt or missing history starts over rather than failing the whole run,
+# which has already put the wallpaper on screen by this point.
+history_tmp="$(mktemp "${history_file}.XXXXXX")"
+if [[ -s $history_file ]] && jq -e 'type == "array"' "$history_file" >/dev/null 2>&1; then
+  jq --argjson e "$entry" \
+    '[$e] + (map(select(.id != $e.id))) | .[0:60]' "$history_file" >"$history_tmp"
+else
+  jq -n --argjson e "$entry" '[$e]' >"$history_tmp"
+fi
+mv "$history_tmp" "$history_file"
 
 # Keep the newest N downloads and drop older ones. Only files this script
 # created (unsplash-*.jpg in this theme's user background dir) are considered,
