@@ -356,16 +356,6 @@ function toggleCollection(collections, collection) {
   return list
 }
 
-// Header caption describing where photos come from. Names the single source
-// when there is exactly one, so the common case reads concretely.
-function selectionSummary(collections) {
-  var picked = collections instanceof Array ? collections : []
-
-  if (picked.length === 0) return "All of Unsplash"
-  if (picked.length === 1) return picked[0].title
-  return picked.length + " sources"
-}
-
 // ------------------------------------------------------------------- history
 
 // unsplash-current.json holds a single entry in the same shape as one history

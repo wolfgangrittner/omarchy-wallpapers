@@ -1038,15 +1038,6 @@ Panel {
             visible: root.configured && !root.setupOpen && root.pane === "collections"
             spacing: Style.spacing.lg
 
-            Text {
-              width: parent.width
-              text: "Photos are drawn from: " + Model.selectionSummary(root.selectedCollections) + "."
-              color: root.faint
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
-            }
-
             // The curated grid. Collection ids are discovered at runtime by
             // bin/uw-curated — biggest match per name — and cached in config.
             Grid {
@@ -1159,6 +1150,12 @@ Panel {
               }
             }
 
+            PanelSectionHeader {
+              text: root.collectionQuery === "" ? "BROWSE" : "RESULTS"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
             Row {
               width: parent.width
               spacing: Style.spacing.md
@@ -1194,12 +1191,6 @@ Panel {
                 verticalPadding: Style.spacing.sm
                 onClicked: root.clearSources()
               }
-            }
-
-            PanelSectionHeader {
-              text: root.collectionQuery === "" ? "BROWSE" : "RESULTS"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
             }
 
             Column {
