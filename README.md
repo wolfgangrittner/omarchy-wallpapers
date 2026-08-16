@@ -14,7 +14,22 @@ Unsplash, both linked.
 Drawing and applying are separate — click the photo as often as you like;
 nothing reaches your desktop until you press **Set as wallpaper**.
 
-Requires Omarchy 4 (Quickshell-based shell).
+## Requirements
+
+Omarchy 4 (the Quickshell-based shell). Beyond that it shells out to a handful
+of commands, all standard on an Omarchy install:
+
+| | |
+|---|---|
+| `curl` | API requests and photo downloads |
+| `jq` | reading and writing the JSON config, history, and lookups |
+| `xdg-open` | opening a photo or photographer on unsplash.com |
+| `omarchy-theme-bg-set` | applying the wallpaper (ships with Omarchy) |
+| `omarchy-notification-send` | the "wallpaper set" toast; falls back to `notify-send`, and is skipped if neither exists |
+| `identify` (ImageMagick) | *optional* — sanity-checks that a download decoded as an image; skipped when not installed |
+
+No other runtime, package, or network service is required, and nothing is
+installed on your behalf.
 
 ## Install
 
