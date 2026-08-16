@@ -27,7 +27,7 @@ import "Model.js" as Model
 // bar's popout coordinator tracks a single item.
 Panel {
   id: root
-  moduleName: "wr.unsplash-wallpapers"
+  moduleName: "wolfgangrittner.omarchy-wallpapers"
   ipcTarget: "wallpapers"
   manageIpc: false
 

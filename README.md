@@ -24,7 +24,7 @@ omarchy plugin add git@gitlab.com:wolfgangrittner/omarchy-unsplash-wallpapers.gi
 
 Then add an access key (below).
 
-Uninstall: `omarchy plugin remove wr.unsplash-wallpapers`
+Uninstall: `omarchy plugin remove wolfgangrittner.omarchy-wallpapers`
 
 ## Access key
 

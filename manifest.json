@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "id": "wr.unsplash-wallpapers",
+  "id": "wolfgangrittner.omarchy-wallpapers",
   "name": "Omarchy Wallpapers",
   "version": "1.0.0",
-  "author": "wr",
+  "author": "Wolfgang Rittner",
   "license": "MIT",
   "description": "Browse photos from Unsplash in the bar and set them as your Omarchy background.",
   "kinds": [
