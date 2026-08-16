@@ -7,6 +7,7 @@
 #   uw-config get                print the whole config as JSON
 #   uw-config set <key> <val>    set one key (numeric values stay numeric)
 #   uw-config setjson <key> <j>  set one key to a raw JSON value (arrays etc.)
+#   uw-config unset <key>...     remove keys
 #   uw-config path               print the config path
 
 set -euo pipefail
@@ -22,6 +23,20 @@ ensure_config() {
     )
   fi
   chmod 600 "$CONFIG" 2>/dev/null || true
+}
+
+# Replace the config with a candidate file, but only once it is confirmed to
+# be a JSON object. This file holds the access key, so a malformed jq
+# invocation must never be able to truncate it.
+commit_config() {
+  local tmp="$1"
+  if [[ ! -s $tmp ]] || ! jq -e 'type == "object"' "$tmp" >/dev/null 2>&1; then
+    rm -f "$tmp"
+    echo "uw-config: refusing to write invalid config; left $CONFIG untouched" >&2
+    exit 1
+  fi
+  chmod 600 "$tmp"
+  mv "$tmp" "$CONFIG"
 }
 
 case "${1:-get}" in
@@ -47,8 +62,7 @@ set)
   else
     jq --arg k "$key" --arg v "$value" '.[$k] = $v' "$CONFIG" >"$tmp"
   fi
-  chmod 600 "$tmp"
-  mv "$tmp" "$CONFIG"
+  commit_config "$tmp"
   ;;
 
 setjson)
@@ -56,21 +70,32 @@ setjson)
   value="${3-}"
   ensure_config
 
-  # Reject malformed JSON up front so a bad argument cannot truncate the
-  # config to an empty file.
+  # Reject malformed JSON up front for a clearer error than commit_config's.
   if ! jq -e . >/dev/null 2>&1 <<<"$value"; then
-    echo "not valid JSON: $value" >&2
+    echo "uw-config: not valid JSON: $value" >&2
     exit 1
   fi
 
   tmp="$(mktemp "${CONFIG}.XXXXXX")"
   jq --arg k "$key" --argjson v "$value" '.[$k] = $v' "$CONFIG" >"$tmp"
-  chmod 600 "$tmp"
-  mv "$tmp" "$CONFIG"
+  commit_config "$tmp"
+  ;;
+
+unset)
+  shift || true
+  [[ $# -gt 0 ]] || { echo "usage: uw-config unset <key>..." >&2; exit 1; }
+  ensure_config
+
+  tmp="$(mktemp "${CONFIG}.XXXXXX")"
+  # The config is fed on stdin: with --args, every trailing argument is a
+  # positional string, so passing it as a file argument would silently make
+  # jq read an empty stdin instead.
+  jq 'delpaths([$ARGS.positional[] | [.]])' --args "$@" <"$CONFIG" >"$tmp"
+  commit_config "$tmp"
   ;;
 
 *)
-  echo "usage: uw-config [get|set <key> <value>|setjson <key> <json>|path]" >&2
+  echo "usage: uw-config [get|set <key> <value>|setjson <key> <json>|unset <key>...|path]" >&2
   exit 1
   ;;
 esac

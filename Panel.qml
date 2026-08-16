@@ -36,6 +36,10 @@ Panel {
   readonly property bool configured: accessKey.length > 0
   readonly property string orientation: String(config.orientation || "landscape")
   readonly property var selectedCollections: config.collections instanceof Array ? config.collections : []
+  readonly property var selectedTopics: config.topics instanceof Array ? config.topics : []
+  // Both selection lists as one, for the summary caption and the SELECTED
+  // section. Topics first, matching the order of the picker below.
+  readonly property var selectedSources: selectedTopics.concat(selectedCollections)
 
   readonly property int columns: Math.max(2, parseInt(setting("columns", 3), 10) || 3)
   readonly property int perPage: Math.max(6, parseInt(setting("perPage", 20), 10) || 20)
@@ -62,6 +66,15 @@ Panel {
   property string collectionQuery: ""
   property double collectionsFetchedAt: 0
   readonly property int collectionsTtlMs: 30 * 60 * 1000
+
+  // Unsplash's official editorial topics. They change rarely, so they are
+  // fetched once per session and cached for as long as the collections list.
+  property var topics: []
+  property double topicsFetchedAt: 0
+
+  // The Collections pane is one keyboard list spanning both sections:
+  // topics first, then the browsable collections.
+  readonly property int pickerCount: topics.length + collections.length
 
   // ------------------------------------------------------------- status
   // Drawing a photo and applying one are separate actions now, so they get
@@ -101,7 +114,7 @@ Panel {
     errorText = ""
     setupOpen = !configured
     if (panelFlick) panelFlick.contentY = 0
-    if (pane === "collections") fetchCollections(false)
+    if (pane === "collections") { fetchCollections(false); fetchTopics(false) }
     Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
   }
 
@@ -109,7 +122,7 @@ Panel {
     cursorActive = false
     errorText = ""
     if (panelFlick) panelFlick.contentY = 0
-    if (pane === "collections") fetchCollections(false)
+    if (pane === "collections") { fetchCollections(false); fetchTopics(false) }
   }
 
   function pluginBin(name) {
@@ -166,7 +179,7 @@ Panel {
     randomProc.command = ["curl", "-sS", "--max-time", "15",
       "-H", "Authorization: Client-ID " + accessKey,
       "-w", "\n__HTTP__%{http_code}",
-      Model.randomEndpoint(selectedCollections, orientation)]
+      Model.randomEndpoint(selectedCollections, selectedTopics, orientation)]
     randomProc.running = true
   }
 
@@ -236,6 +249,18 @@ Panel {
     Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
   }
 
+  function fetchTopics(force) {
+    if (!configured || topicsProc.running) return
+    var fresh = topics.length > 0 && (Date.now() - topicsFetchedAt) < collectionsTtlMs
+    if (!force && fresh) return
+
+    topicsProc.command = ["curl", "-sS", "--max-time", "15",
+      "-H", "Authorization: Client-ID " + accessKey,
+      "-w", "\n__HTTP__%{http_code}",
+      Model.topicsEndpoint(30)]
+    topicsProc.running = true
+  }
+
   function toggleCollection(collection) {
     if (!collection) return
     var next = Model.toggleCollection(selectedCollections, collection)
@@ -243,9 +268,17 @@ Panel {
     saveConfigJson("collections", next)
   }
 
-  function clearCollections() {
-    config = Object.assign({}, config, { collections: [] })
+  function toggleTopic(topic) {
+    if (!topic) return
+    var next = Model.toggleCollection(selectedTopics, topic)
+    config = Object.assign({}, config, { topics: next })
+    saveConfigJson("topics", next)
+  }
+
+  function clearSources() {
+    config = Object.assign({}, config, { collections: [], topics: [] })
     saveConfigJson("collections", [])
+    saveConfigJson("topics", [])
   }
 
   // -------------------------------------------------------------- settings
@@ -272,17 +305,19 @@ Panel {
       if (history.length === 0) return
       historyIndex = Model.moveCursor(historyIndex, dx, dy, history.length, columns)
     } else if (pane === "collections") {
-      if (collections.length === 0) return
+      if (pickerCount === 0) return
       // A single-column list: vertical movement only.
-      collectionIndex = Model.moveCursor(collectionIndex, 0, dy !== 0 ? dy : dx, collections.length, 1)
+      collectionIndex = Model.moveCursor(collectionIndex, 0, dy !== 0 ? dy : dx, pickerCount, 1)
     }
   }
 
   function activateCursor() {
     if (pane === "history" && history.length > 0) {
       applyAndClose(history[Math.max(0, Math.min(historyIndex, history.length - 1))])
-    } else if (pane === "collections" && collections.length > 0) {
-      toggleCollection(collections[Math.max(0, Math.min(collectionIndex, collections.length - 1))])
+    } else if (pane === "collections" && pickerCount > 0) {
+      var i = Math.max(0, Math.min(collectionIndex, pickerCount - 1))
+      if (i < topics.length) toggleTopic(topics[i])
+      else toggleCollection(collections[i - topics.length])
     } else if (pane === "home") {
       // Enter applies what is on show; `n` draws another.
       if (canSet) applyAndClose(heroPhoto)
@@ -371,6 +406,23 @@ Panel {
     onExited: function(exitCode) {
       root.loadingCollections = false
       if (exitCode !== 0 && root.errorText === "") root.errorText = Model.errorFor(0, "")
+    }
+  }
+
+  Process {
+    id: topicsProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var response = Model.parseHttp(text)
+        if (response.status !== 200) {
+          // Topics are supplementary — a failure here must not blank the
+          // collection list or claim the whole pane is broken.
+          return
+        }
+        root.topics = Model.normalizeTopics(response.body)
+        root.topicsFetchedAt = Date.now()
+      }
     }
   }
 
@@ -481,7 +533,7 @@ Panel {
         else if (t === "o" || t === "O") root.openUrl(root.appliedPhoto ? root.appliedPhoto.htmlLink : "")
         else if (t === "/" && root.pane === "collections") collectionField.forceActiveFocus()
         else if (t === "r" || t === "R") {
-          if (root.pane === "collections") root.fetchCollections(true)
+          if (root.pane === "collections") { root.fetchCollections(true); root.fetchTopics(true) }
         }
       }
 
@@ -524,7 +576,7 @@ Panel {
               Text {
                 anchors.verticalCenter: parent.verticalCenter
                 visible: root.configured && !root.setupOpen
-                text: Model.selectionSummary(root.selectedCollections)
+                text: Model.selectionSummary(root.selectedCollections, root.selectedTopics)
                 color: root.faint
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
@@ -897,55 +949,19 @@ Panel {
 
             Text {
               width: parent.width
-              text: "Photos are drawn from the collections you select here."
+              text: "Photos are drawn from the topics and collections you pick here."
               color: root.faint
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               wrapMode: Text.WordWrap
             }
 
-            Row {
-              width: parent.width
-              spacing: Style.spacing.md
-
-              TextField {
-                id: collectionField
-                width: parent.width - clearButton.implicitWidth - Style.spacing.md
-                placeholderText: "Search collections…"
-                foreground: root.foreground
-                font.family: root.fontFamily
-
-                Keys.onPressed: function(event) {
-                  if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-                    root.searchCollections()
-                    event.accepted = true
-                  } else if (event.key === Qt.Key_Escape) {
-                    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
-                    event.accepted = true
-                  }
-                }
-              }
-
-              Button {
-                id: clearButton
-                anchors.verticalCenter: parent.verticalCenter
-                text: "Clear"
-                tooltipText: "Deselect every collection and use all of Unsplash"
-                bordered: true
-                enabled: root.selectedCollections.length > 0
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                fontSize: Style.font.caption
-                verticalPadding: Style.spacing.sm
-                onClicked: root.clearCollections()
-              }
-            }
-
-            // Selected collections are pinned here so a choice made from an
-            // earlier search stays visible and removable after the list moves on.
+            // Everything selected, pinned together, so a collection chosen
+            // from an earlier search stays visible and removable after the
+            // browse list has moved on.
             Column {
               width: parent.width
-              visible: root.selectedCollections.length > 0
+              visible: root.selectedSources.length > 0
               spacing: Style.spacing.sm
 
               PanelSectionHeader {
@@ -955,7 +971,7 @@ Panel {
               }
 
               Repeater {
-                model: root.selectedCollections
+                model: root.selectedSources
 
                 Rectangle {
                   required property var modelData
@@ -998,9 +1014,90 @@ Panel {
                   }
 
                   TapHandler {
-                    onTapped: root.toggleCollection(modelData)
+                    // The two lists are disjoint, so membership decides which
+                    // selection this row belongs to.
+                    onTapped: {
+                      if (Model.isSelected(root.selectedTopics, modelData.id)) root.toggleTopic(modelData)
+                      else root.toggleCollection(modelData)
+                    }
                   }
                 }
+              }
+            }
+
+            // Unsplash's official editorial topics — the closest thing to the
+            // themes in Unsplash's own desktop app, and permanent, unlike the
+            // collections below.
+            Column {
+              width: parent.width
+              visible: root.topics.length > 0
+              spacing: Style.spacing.sm
+
+              PanelSectionHeader {
+                text: "CURATED BY UNSPLASH"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+              }
+
+              Repeater {
+                model: root.topics
+
+                SourceRow {
+                  required property var modelData
+                  required property int index
+
+                  width: parent.width
+                  entry: modelData
+                  picked: Model.isSelected(root.selectedTopics, modelData.id)
+                  hasCursor: root.cursorActive && root.pane === "collections"
+                    && root.collectionIndex === index
+                  foreground: root.foreground
+                  faint: root.faint
+                  fontFamily: root.fontFamily
+
+                  onToggled: root.toggleTopic(modelData)
+                  onHoveredIn: {
+                    root.cursorActive = true
+                    root.collectionIndex = index
+                  }
+                }
+              }
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.spacing.md
+
+              TextField {
+                id: collectionField
+                width: parent.width - clearButton.implicitWidth - Style.spacing.md
+                placeholderText: "Search collections…"
+                foreground: root.foreground
+                font.family: root.fontFamily
+
+                Keys.onPressed: function(event) {
+                  if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                    root.searchCollections()
+                    event.accepted = true
+                  } else if (event.key === Qt.Key_Escape) {
+                    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+                    event.accepted = true
+                  }
+                }
+              }
+
+              Button {
+                id: clearButton
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Clear"
+                tooltipText: "Deselect everything and use all of Unsplash"
+                bordered: true
+                enabled: root.selectedSources.length > 0
+                foreground: root.selectedSources.length > 0 ? root.foreground : root.faint
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                verticalPadding: Style.spacing.sm
+                onClicked: root.clearSources()
               }
             }
 
@@ -1017,98 +1114,24 @@ Panel {
               Repeater {
                 model: root.collections
 
-                Rectangle {
-                  id: collectionRow
+                SourceRow {
                   required property var modelData
                   required property int index
 
                   width: parent.width
-                  height: Style.space(46)
+                  entry: modelData
+                  picked: Model.isSelected(root.selectedCollections, modelData.id)
+                  // The keyboard cursor spans both sections, topics first.
+                  hasCursor: root.cursorActive && root.pane === "collections"
+                    && root.collectionIndex === root.topics.length + index
+                  foreground: root.foreground
+                  faint: root.faint
+                  fontFamily: root.fontFamily
 
-                  readonly property bool picked: Model.isSelected(root.selectedCollections, modelData.id)
-                  readonly property bool hot: rowHover.hovered
-                    || (root.cursorActive && root.pane === "collections" && root.collectionIndex === index)
-
-                  color: hot ? Style.hoverFillFor(root.foreground, Color.accent)
-                    : (picked ? Style.selectedFillFor(root.foreground, Color.accent) : "transparent")
-
-                  Row {
-                    id: collectionInner
-                    // Sized from the row rectangle rather than its own
-                    // children, so the text column below can claim the
-                    // remaining space without a binding loop.
-                    width: parent.width - Style.spacing.rowPaddingX
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: Style.spacing.md
-
-                    Rectangle {
-                      anchors.verticalCenter: parent.verticalCenter
-                      width: Style.space(54)
-                      height: Style.space(36)
-                      color: modelData.coverColor
-                      clip: true
-
-                      Image {
-                        anchors.fill: parent
-                        source: modelData.coverUrl
-                        fillMode: Image.PreserveAspectCrop
-                        asynchronous: true
-                        cache: true
-                        sourceSize.width: Style.space(54) * 2
-                      }
-                    }
-
-                    Column {
-                      anchors.verticalCenter: parent.verticalCenter
-                      width: collectionInner.width - Style.space(54) - Style.space(20)
-                        - Style.spacing.md * 2
-                      spacing: Style.spacing.xxs
-
-                      Text {
-                        width: parent.width
-                        text: modelData.title
-                        color: root.foreground
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.bodySmall
-                        elide: Text.ElideRight
-                      }
-
-                      Text {
-                        width: parent.width
-                        text: modelData.totalPhotos + " photos"
-                          + (modelData.curator !== "" ? " · " + modelData.curator : "")
-                        color: root.faint
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.caption
-                        elide: Text.ElideRight
-                      }
-                    }
-
-                    Text {
-                      anchors.verticalCenter: parent.verticalCenter
-                      text: collectionRow.picked ? "󰄬" : "󰝦"
-                      color: collectionRow.picked ? root.foreground : root.faint
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.body
-                    }
-                  }
-
-                  // TapHandler, not MouseArea: this list is long enough to
-                  // scroll, and a MouseArea inside an interactive Flickable
-                  // loses its click the moment the pointer drifts a pixel
-                  // during the press — which is most clicks on a trackpad.
-                  // TapHandler cooperates with the Flickable's drag instead.
-                  HoverHandler {
-                    id: rowHover
-                    cursorShape: Qt.PointingHandCursor
-                    onHoveredChanged: if (hovered) {
-                      root.cursorActive = true
-                      root.collectionIndex = collectionRow.index
-                    }
-                  }
-
-                  TapHandler {
-                    onTapped: root.toggleCollection(collectionRow.modelData)
+                  onToggled: root.toggleCollection(modelData)
+                  onHoveredIn: {
+                    root.cursorActive = true
+                    root.collectionIndex = root.topics.length + index
                   }
                 }
               }

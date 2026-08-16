@@ -1,8 +1,9 @@
 # Unsplash Wallpapers
 
-Unsplash in the Omarchy bar. Draw a random photo from collections you pick, set
-it as your wallpaper. An [Omarchy](https://omarchy.org/) shell plugin, modelled
-on Unsplash's macOS menu bar app.
+Unsplash in the Omarchy bar. Draw a random photo from the topics and
+collections you pick, set it as your wallpaper. An
+[Omarchy](https://omarchy.org/) shell plugin, modelled on Unsplash's macOS
+menu bar app.
 
 Drawing and applying are separate — click the photo as often as you like;
 nothing reaches your desktop until you press **Set as wallpaper**.
@@ -27,7 +28,7 @@ Uninstall: `omarchy plugin remove wr.unsplash-wallpapers`
 | Pane | |
 |---|---|
 | **Home** | The photo on show. Click it (or the ⟳ over it) to draw another. **Set as wallpaper** applies it and closes the panel. |
-| **Collections** | Browse or search collections; tick the ones photos come from. None ticked = all of Unsplash. |
+| **Collections** | **Curated by Unsplash** lists the official editorial topics (Wallpapers, Nature, Textures, Architecture, Travel, Film…); below that, browse or search any public collection. Tick any mix. None ticked = all of Unsplash. |
 | **History** | Every photo shown, applied or not. Click one to set it. |
 
 ## Mouse
@@ -37,7 +38,7 @@ Uninstall: `omarchy plugin remove wr.unsplash-wallpapers`
 | Left-click icon | Open/close |
 | Right-click icon | Open and draw a photo |
 | Click photo | Draw another |
-| Click collection | Select/deselect |
+| Click topic/collection | Select/deselect as a source |
 | Click history thumb | Set it, close |
 | Right-click history thumb | Open on unsplash.com |
 
@@ -56,7 +57,7 @@ Uninstall: `omarchy plugin remove wr.unsplash-wallpapers`
 
 ## Config
 
-`bin/uw-config set <key> <value>`
+`bin/uw-config set <key> <value>` · `unset <key>...` · `get`
 
 | Key | Default | |
 |---|---|---|
@@ -77,7 +78,7 @@ are kept; older `unsplash-*.jpg` in that directory are deleted, nothing else.
 State, all in `~/.local/state/omarchy/settings/`:
 
 ```
-unsplash.json          key, orientation, collections, limits
+unsplash.json          key, orientation, topics, collections, limits
 unsplash-current.json  photo currently applied
 unsplash-history.json  every photo shown
 ```
@@ -86,6 +87,7 @@ Source:
 
 ```
 Panel.qml              bar button + three-pane popup
+SourceRow.qml          one selectable topic/collection row
 Model.js               endpoints, parsing, config, grid math
 bin/uw-config          read/write config
 bin/uw-history         record photos shown

@@ -10,16 +10,60 @@ var UTM = "utm_source=omarchy_unsplash_wallpapers&utm_medium=referral"
 
 // ------------------------------------------------------------------ endpoints
 
-// One random photo, drawn from the selected collections when there are any.
-// This is the whole engine behind "New photo" and the rotation timer: a single
-// request per change, matching how Unsplash's own desktop app works.
-function randomEndpoint(collectionIds, orientation) {
+// One random photo, drawn from the selected topics and collections when there
+// are any. This is the whole engine behind "New photo": a single request per
+// photo, matching how Unsplash's own desktop app works.
+//
+// Unsplash accepts `topics` and `collections` on the same request (verified —
+// it returns 200 rather than an error), though it does not document how the
+// two combine. Both are sent as selected and the API decides.
+function randomEndpoint(collectionIds, topicIds, orientation) {
   var url = BASE + "/photos/random?count=1"
   if (orientation) url += "&orientation=" + encodeURIComponent(orientation)
+
+  var topics = collectionIdList(topicIds)
+  if (topics !== "") url += "&topics=" + encodeURIComponent(topics)
+
   var ids = collectionIdList(collectionIds)
   if (ids !== "") url += "&collections=" + encodeURIComponent(ids)
+
   // Random responses must never be served from a cache.
   return url + "&_=" + Date.now()
+}
+
+// Unsplash's official editorial topics — the permanent, curated categories
+// behind unsplash.com/t/*. `order_by=featured` puts the ones the site
+// promotes (Wallpapers, Nature, …) first.
+function topicsEndpoint(perPage) {
+  var per = Math.max(1, parseInt(perPage, 10) || 20)
+  return BASE + "/topics?per_page=" + per + "&order_by=featured"
+}
+
+function normalizeTopics(body) {
+  var data
+  try {
+    data = JSON.parse(String(body || ""))
+  } catch (e) {
+    return []
+  }
+  if (!(data instanceof Array)) return []
+
+  var out = []
+  for (var i = 0; i < data.length; i++) {
+    var t = data[i]
+    if (!t || !t.id) continue
+    out.push({
+      id: String(t.id),
+      slug: String(t.slug || ""),
+      title: String(t.title || "Untitled"),
+      description: "",
+      totalPhotos: parseInt(t.total_photos, 10) || 0,
+      coverUrl: (t.cover_photo && t.cover_photo.urls) ? String(t.cover_photo.urls.small || "") : "",
+      coverColor: (t.cover_photo && t.cover_photo.color) ? String(t.cover_photo.color) : "#1b1b1b",
+      curator: ""
+    })
+  }
+  return out
 }
 
 // `/collections` is the public collection list; `/collections/featured` was
@@ -198,6 +242,8 @@ function defaultConfig() {
     // History records every photo shown, not just the ones applied, so it
     // needs a ceiling — the panel renders the whole list.
     historyMax: 200,
+    // Official editorial topics, same [{ id, title }] shape as collections.
+    topics: [],
     // [{ id, title }] — the title is stored alongside the id so the selected
     // list stays readable without re-fetching every collection it names.
     collections: []
@@ -221,17 +267,22 @@ function parseConfig(raw) {
   var historyMax = parseInt(data.historyMax, 10)
   if (isFinite(historyMax) && historyMax > 0) config.historyMax = historyMax
 
-  if (data.collections instanceof Array) {
-    var selected = []
-    for (var i = 0; i < data.collections.length; i++) {
-      var entry = data.collections[i]
-      // Tolerate a bare id array from a hand-edited config.
-      if (typeof entry === "string") selected.push({ id: entry, title: entry })
-      else if (entry && entry.id) selected.push({ id: String(entry.id), title: String(entry.title || entry.id) })
-    }
-    config.collections = selected
-  }
+  config.collections = parseSelectionList(data.collections, config.collections)
+  config.topics = parseSelectionList(data.topics, config.topics)
   return config
+}
+
+// Both selection lists are [{ id, title }]; a bare id array from a hand-edited
+// config is tolerated.
+function parseSelectionList(raw, fallback) {
+  if (!(raw instanceof Array)) return fallback
+  var selected = []
+  for (var i = 0; i < raw.length; i++) {
+    var entry = raw[i]
+    if (typeof entry === "string") selected.push({ id: entry, title: entry })
+    else if (entry && entry.id) selected.push({ id: String(entry.id), title: String(entry.title || entry.id) })
+  }
+  return selected
 }
 
 function isSelected(collections, id) {
@@ -252,11 +303,16 @@ function toggleCollection(collections, collection) {
   return list
 }
 
-function selectionSummary(collections) {
-  var count = collections instanceof Array ? collections.length : 0
-  if (count === 0) return "All of Unsplash"
-  if (count === 1) return collections[0].title
-  return count + " collections"
+// Header caption describing where photos come from. Names the single source
+// when there is exactly one, so the common case reads concretely.
+function selectionSummary(collections, topics) {
+  var picked = []
+  if (topics instanceof Array) picked = picked.concat(topics)
+  if (collections instanceof Array) picked = picked.concat(collections)
+
+  if (picked.length === 0) return "All of Unsplash"
+  if (picked.length === 1) return picked[0].title
+  return picked.length + " sources"
 }
 
 // ------------------------------------------------------------------- history
