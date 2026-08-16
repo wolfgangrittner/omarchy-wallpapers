@@ -33,15 +33,15 @@ Panel {
 
   // ---------------------------------------------------------------- config
   //
-  // Persisted config lives in ~/.local/state/omarchy/settings/unsplash.json,
-  // written by bin/uw-config and watched here, so edits from either side
+  // Persisted config lives in ~/.local/state/omarchy/settings/omarchy-wallpapers.json,
+  // written by bin/ow-config and watched here, so edits from either side
   // converge without a restart.
   property var config: Model.defaultConfig()
   readonly property string accessKey: String(config.accessKey || "")
   readonly property bool configured: accessKey.length > 0
   readonly property string orientation: String(config.orientation || "landscape")
   readonly property var selectedCollections: config.collections instanceof Array ? config.collections : []
-  // The curated grid, resolved once by bin/uw-curated and cached in config.
+  // The curated grid, resolved once by bin/ow-curated and cached in config.
   readonly property var curated: config.curated instanceof Array ? config.curated : []
 
   function isCurated(id) {
@@ -183,8 +183,8 @@ Panel {
     delete pendingWrites[key]
 
     configProc.command = entry.json
-      ? [pluginBin("uw-config"), "setjson", key, JSON.stringify(entry.value)]
-      : [pluginBin("uw-config"), "set", key, String(entry.value)]
+      ? [pluginBin("ow-config"), "setjson", key, JSON.stringify(entry.value)]
+      : [pluginBin("ow-config"), "set", key, String(entry.value)]
     configProc.running = true
   }
 
@@ -213,7 +213,7 @@ Panel {
   // everything seen rather than only what made it to the desktop.
   function recordShown(photo) {
     if (!photo) return
-    historyProc.command = [pluginBin("uw-history"), "add",
+    historyProc.command = [pluginBin("ow-history"), "add",
       "--id", String(photo.id),
       "--author", String(photo.authorName || ""),
       "--username", String(photo.authorUsername || ""),
@@ -237,7 +237,7 @@ Panel {
   function applyPhoto(photo) {
     if (!photo || !photo.rawUrl) return
     applying = true
-    setProc.command = [pluginBin("uw-set-wallpaper"),
+    setProc.command = [pluginBin("ow-set-wallpaper"),
       "--id", String(photo.id),
       "--url", Model.wallpaperUrl(photo.rawUrl, targetWidth),
       "--raw-url", String(photo.rawUrl),
@@ -276,14 +276,14 @@ Panel {
   }
 
   // Resolve the curated grid once, on the first run that has a key, and cache
-  // the result in the config. Collection ids are never hardcoded: uw-curated
+  // the result in the config. Collection ids are never hardcoded: ow-curated
   // searches for each name and keeps the biggest match.
   property bool curatedRequested: false
 
   function discoverCurated() {
     if (!configured || curatedRequested || curated.length > 0) return
     curatedRequested = true
-    curatedProc.command = [pluginBin("uw-curated"), "--key", accessKey]
+    curatedProc.command = [pluginBin("ow-curated"), "--key", accessKey]
       .concat(Model.curatedTermArgs())
     curatedProc.running = true
   }
@@ -353,7 +353,7 @@ Panel {
   // ------------------------------------------------------------ file state
   FileView {
     id: configFile
-    path: Quickshell.env("HOME") + "/.local/state/omarchy/settings/unsplash.json"
+    path: Quickshell.env("HOME") + "/.local/state/omarchy/settings/omarchy-wallpapers.json"
     watchChanges: true
     printErrors: false
     onFileChanged: reload()
@@ -363,7 +363,7 @@ Panel {
 
   FileView {
     id: appliedFile
-    path: Quickshell.env("HOME") + "/.local/state/omarchy/settings/unsplash-current.json"
+    path: Quickshell.env("HOME") + "/.local/state/omarchy/settings/omarchy-wallpapers-current.json"
     watchChanges: true
     printErrors: false
     onFileChanged: reload()
@@ -373,7 +373,7 @@ Panel {
 
   FileView {
     id: historyFile
-    path: Quickshell.env("HOME") + "/.local/state/omarchy/settings/unsplash-history.json"
+    path: Quickshell.env("HOME") + "/.local/state/omarchy/settings/omarchy-wallpapers-history.json"
     watchChanges: true
     printErrors: false
     onFileChanged: reload()
@@ -474,7 +474,7 @@ Panel {
     id: configProc
     stderr: StdioCollector {
       waitForEnd: true
-      onStreamFinished: if (String(text || "").trim() !== "") console.log("unsplash: uw-config: " + text)
+      onStreamFinished: if (String(text || "").trim() !== "") console.log("unsplash: ow-config: " + text)
     }
     onExited: function(exitCode) {
       if (exitCode !== 0) root.errorText = "Could not save that setting."
@@ -1043,7 +1043,7 @@ Panel {
             spacing: Style.spacing.lg
 
             // The curated grid. Collection ids are discovered at runtime by
-            // bin/uw-curated — biggest match per name — and cached in config.
+            // bin/ow-curated — biggest match per name — and cached in config.
             Grid {
               id: curatedGrid
               width: parent.width

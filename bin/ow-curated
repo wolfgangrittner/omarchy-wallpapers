@@ -6,7 +6,7 @@
 # and cached in the config, so the grid follows Unsplash rather than a list
 # that silently rots.
 #
-#   uw-curated --key <access-key> [--min N] [term...]
+#   ow-curated --key <access-key> [--min N] [term...]
 #
 # --min is the preferred floor of fetchable photos (default 50); if nothing
 # clears it, the largest usable match is taken anyway.
@@ -30,7 +30,7 @@ done
 
 [[ $min =~ ^[0-9]+$ ]] || min=50
 
-[[ -n $key ]] || { echo "uw-curated: --key is required" >&2; exit 1; }
+[[ -n $key ]] || { echo "ow-curated: --key is required" >&2; exit 1; }
 if [[ ${#terms[@]} -eq 0 ]]; then
   terms=(wallpapers nature architecture space beach "black & white")
 fi

@@ -5,7 +5,7 @@
 # (~/.config/omarchy/backgrounds/<theme>/) so it also joins the rotation that
 # `omarchy theme bg next` walks, then handed to omarchy-theme-bg-set.
 #
-#   uw-set-wallpaper --id <id> --url <sized-url> [--width N] [--author NAME]
+#   ow-set-wallpaper --id <id> --url <sized-url> [--width N] [--author NAME]
 #                    [--link URL] [--download-location URL] [--key CLIENT_ID]
 #                    [--keep N] [--preview URL] [--raw-url URL]
 #
@@ -98,7 +98,7 @@ fi
 # Attribution for the currently applied photo, so the panel can show it after
 # a restart and other scripts can read it.
 settings_dir="$HOME/.local/state/omarchy/settings"
-state_file="$settings_dir/unsplash-current.json"
+state_file="$settings_dir/omarchy-wallpapers-current.json"
 mkdir -p "$settings_dir"
 
 entry="$(jq -n \
@@ -115,11 +115,11 @@ entry="$(jq -n \
 
 printf '%s\n' "$entry" >"$state_file"
 
-# History is written when a photo is *shown* (uw-history add, called by the
+# History is written when a photo is *shown* (ow-history add, called by the
 # panel), not when it is applied. All that is needed here is to point the
 # existing entry at the file now on disk so its thumbnail loads locally; an
 # entry may legitimately be absent when a wallpaper is applied by a script.
-"$(dirname "${BASH_SOURCE[0]}")/uw-history" setpath --id "$id" --path "$dest" 2>/dev/null || true
+"$(dirname "${BASH_SOURCE[0]}")/ow-history" setpath --id "$id" --path "$dest" 2>/dev/null || true
 
 # Keep the newest N downloads and drop older ones. Only files this script
 # created (unsplash-*.jpg in this theme's user background dir) are considered,

@@ -90,7 +90,7 @@ nothing here needs to change.
 
 ## Config
 
-`bin/uw-config set <key> <value>` · `unset <key>...` · `get`
+`bin/ow-config set <key> <value>` · `unset <key>...` · `get`
 
 | Key | Default | |
 |---|---|---|
@@ -103,7 +103,7 @@ nothing here needs to change.
 
 ### The curated grid
 
-Collection ids are never hardcoded. On first run `bin/uw-curated` searches
+Collection ids are never hardcoded. On first run `bin/ow-curated` searches
 Unsplash for each of the six names and keeps the **largest match**, counted in
 photos a free API key can actually fetch — `total_photos` minus `total_plus`.
 
@@ -118,8 +118,12 @@ The same count drives the browse list: collections with fewer than `minPhotos`
 fetchable photos are hidden, which removes Unsplash+ collections (0 usable) and
 near-empty ones in a single rule. The pane says how many it hid.
 
-Config lives in `~/.local/state/omarchy/settings/unsplash.json` (mode 0600) —
-outside `~/.config` so the access key stays out of dotfiles repos.
+Config lives in `~/.local/state/omarchy/settings/omarchy-wallpapers.json` (mode
+0600) — outside `~/.config` so the access key stays out of dotfiles repos.
+
+Two more live on the bar widget itself in `~/.config/omarchy/shell.json`, since
+they are layout rather than behaviour: `columns` (history/curated grid width,
+default 3) and `perPage` (collection search results, default 20).
 
 ## Files
 
@@ -131,9 +135,9 @@ are kept; older `unsplash-*.jpg` in that directory are deleted, nothing else.
 State, all in `~/.local/state/omarchy/settings/`:
 
 ```
-unsplash.json          key, orientation, collections, curated, limits
-unsplash-current.json  photo currently applied
-unsplash-history.json  every photo shown
+omarchy-wallpapers.json          key, orientation, collections, curated, limits
+omarchy-wallpapers-current.json  photo currently applied
+omarchy-wallpapers-history.json  every photo shown
 ```
 
 Source:
@@ -143,19 +147,19 @@ Panel.qml              bar button + three-pane popup
 CuratedCell.qml        one tile in the curated grid
 SourceRow.qml          one row in the search/browse list
 Model.js               endpoints, parsing, config, grid math
-bin/uw-config          read/write config
-bin/uw-curated         resolve the six curated collections
-bin/uw-history         record photos shown
-bin/uw-set-wallpaper   download, apply, prune
+bin/ow-config          read/write config
+bin/ow-curated         resolve the six curated collections
+bin/ow-history         record photos shown
+bin/ow-set-wallpaper   download, apply, prune
 ```
 
 ## IPC
 
 ```bash
-omarchy-shell unsplash toggle|open|close
-omarchy-shell unsplash next          # draw a photo
-omarchy-shell unsplash set           # apply the one on show
-omarchy-shell unsplash showPane home|collections|history
+omarchy-shell wallpapers toggle|open|close
+omarchy-shell wallpapers next          # draw a photo
+omarchy-shell wallpapers set           # apply the one on show
+omarchy-shell wallpapers showPane home|collections|history
 ```
 
 Bind in `~/.config/hypr/bindings.lua`:

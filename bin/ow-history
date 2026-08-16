@@ -3,16 +3,16 @@
 #
 # The panel calls `add` each time it draws a new photo — whether or not it is
 # ever applied — so History is a log of everything seen, newest first.
-# uw-set-wallpaper calls `setpath` afterwards so an entry whose image is on
+# ow-set-wallpaper calls `setpath` afterwards so an entry whose image is on
 # disk renders its thumbnail from the local file instead of the CDN.
 #
-#   uw-history add --id <id> [--author N] [--username U] [--link URL]
+#   ow-history add --id <id> [--author N] [--username U] [--link URL]
 #                  [--preview URL] [--raw URL] [--max N]
-#   uw-history setpath --id <id> --path <file>
+#   ow-history setpath --id <id> --path <file>
 
 set -euo pipefail
 
-HISTORY="$HOME/.local/state/omarchy/settings/unsplash-history.json"
+HISTORY="$HOME/.local/state/omarchy/settings/omarchy-wallpapers-history.json"
 
 id=""
 author=""
@@ -24,7 +24,7 @@ path=""
 max="200"
 
 action="${1:-}"
-[[ -n $action ]] || { echo "usage: uw-history add|setpath ..." >&2; exit 1; }
+[[ -n $action ]] || { echo "usage: ow-history add|setpath ..." >&2; exit 1; }
 shift || true
 
 while [[ $# -gt 0 ]]; do
@@ -88,7 +88,7 @@ setpath)
 
 *)
   rm -f "$tmp"
-  echo "usage: uw-history add|setpath ..." >&2
+  echo "usage: ow-history add|setpath ..." >&2
   exit 1
   ;;
 esac

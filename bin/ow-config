@@ -4,15 +4,15 @@
 # The config lives under ~/.local/state (not ~/.config) so an access key
 # never lands in a dotfiles repo by accident. The file is kept 0600.
 #
-#   uw-config get                print the whole config as JSON
-#   uw-config set <key> <val>    set one key (numeric values stay numeric)
-#   uw-config setjson <key> <j>  set one key to a raw JSON value (arrays etc.)
-#   uw-config unset <key>...     remove keys
-#   uw-config path               print the config path
+#   ow-config get                print the whole config as JSON
+#   ow-config set <key> <val>    set one key (numeric values stay numeric)
+#   ow-config setjson <key> <j>  set one key to a raw JSON value (arrays etc.)
+#   ow-config unset <key>...     remove keys
+#   ow-config path               print the config path
 
 set -euo pipefail
 
-CONFIG="$HOME/.local/state/omarchy/settings/unsplash.json"
+CONFIG="$HOME/.local/state/omarchy/settings/omarchy-wallpapers.json"
 
 ensure_config() {
   mkdir -p "$(dirname "$CONFIG")"
@@ -32,7 +32,7 @@ commit_config() {
   local tmp="$1"
   if [[ ! -s $tmp ]] || ! jq -e 'type == "object"' "$tmp" >/dev/null 2>&1; then
     rm -f "$tmp"
-    echo "uw-config: refusing to write invalid config; left $CONFIG untouched" >&2
+    echo "ow-config: refusing to write invalid config; left $CONFIG untouched" >&2
     exit 1
   fi
   chmod 600 "$tmp"
@@ -50,7 +50,7 @@ get)
   ;;
 
 set)
-  key="${2:?usage: uw-config set <key> <value>}"
+  key="${2:?usage: ow-config set <key> <value>}"
   value="${3-}"
   ensure_config
 
@@ -66,13 +66,13 @@ set)
   ;;
 
 setjson)
-  key="${2:?usage: uw-config setjson <key> <json>}"
+  key="${2:?usage: ow-config setjson <key> <json>}"
   value="${3-}"
   ensure_config
 
   # Reject malformed JSON up front for a clearer error than commit_config's.
   if ! jq -e . >/dev/null 2>&1 <<<"$value"; then
-    echo "uw-config: not valid JSON: $value" >&2
+    echo "ow-config: not valid JSON: $value" >&2
     exit 1
   fi
 
@@ -83,7 +83,7 @@ setjson)
 
 unset)
   shift || true
-  [[ $# -gt 0 ]] || { echo "usage: uw-config unset <key>..." >&2; exit 1; }
+  [[ $# -gt 0 ]] || { echo "usage: ow-config unset <key>..." >&2; exit 1; }
   ensure_config
 
   tmp="$(mktemp "${CONFIG}.XXXXXX")"
@@ -95,7 +95,7 @@ unset)
   ;;
 
 *)
-  echo "usage: uw-config [get|set <key> <value>|setjson <key> <json>|unset <key>...|path]" >&2
+  echo "usage: ow-config [get|set <key> <value>|setjson <key> <json>|unset <key>...|path]" >&2
   exit 1
   ;;
 esac
