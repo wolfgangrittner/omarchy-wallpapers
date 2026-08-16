@@ -766,6 +766,9 @@ Panel {
               }
 
               Button {
+                // Nothing to rebuild, and no orientation worth choosing, until
+                // there is a key — a first run should ask one thing only.
+                visible: root.configured
                 text: "Rebuild curated"
                 tooltipText: "Look up the six curated collections on Unsplash again"
                 bordered: true
@@ -775,6 +778,7 @@ Panel {
               }
 
               Button {
+                visible: root.configured
                 text: "Orientation: " + root.orientation
                 bordered: true
                 foreground: root.foreground
