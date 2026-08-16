@@ -28,7 +28,7 @@ Uninstall: `omarchy plugin remove wr.unsplash-wallpapers`
 | Pane | |
 |---|---|
 | **Home** | The photo on show. Click it (or the ⟳ over it) to draw another. **Set as wallpaper** applies it and closes the panel. |
-| **Collections** | **Curated by Unsplash** lists the official editorial topics (Wallpapers, Nature, Textures, Architecture, Travel, Film…); below that, browse or search any public collection. Tick any mix. None ticked = all of Unsplash. |
+| **Collections** | **Curated by Unsplash** lists the official editorial topics (Wallpapers, Nature, Textures, Architecture, Travel, Film…); below that, browse or search any public collection. Tick any mix. **Wallpapers** is selected out of the box; untick everything for all of Unsplash. |
 | **History** | Every photo shown, applied or not. Click one to set it. |
 
 ## Mouse

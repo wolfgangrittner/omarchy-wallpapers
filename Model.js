@@ -234,6 +234,12 @@ function heroSource(photo) {
 
 // -------------------------------------------------------------------- config
 
+// Unsplash's official Wallpapers topic. Preselected on a fresh install: an
+// unfiltered random photo is as likely to be a portrait or a product shot as
+// something you would want behind your windows. Unticking it persists an
+// empty list, which is honoured — the default only fills in a missing key.
+var WALLPAPERS_TOPIC_ID = "bo8jQKTaE0Y"
+
 function defaultConfig() {
   return {
     accessKey: "",
@@ -243,7 +249,7 @@ function defaultConfig() {
     // needs a ceiling — the panel renders the whole list.
     historyMax: 200,
     // Official editorial topics, same [{ id, title }] shape as collections.
-    topics: [],
+    topics: [{ id: WALLPAPERS_TOPIC_ID, title: "Wallpapers" }],
     // [{ id, title }] — the title is stored alongside the id so the selected
     // list stays readable without re-fetching every collection it names.
     collections: []
