@@ -1248,15 +1248,6 @@ Panel {
             visible: root.configured && !root.setupOpen && root.pane === "history"
             spacing: Style.spacing.lg
 
-            Text {
-              width: parent.width
-              text: "Every photo shown so far. Click one to set it as your wallpaper."
-              color: root.faint
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
-            }
-
             Grid {
               id: historyGrid
               width: parent.width
@@ -1376,7 +1367,7 @@ Panel {
             Text {
               width: parent.width
               visible: root.history.length === 0
-              text: "No wallpapers applied yet."
+              text: "No photos shown yet."
               color: root.faint
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
