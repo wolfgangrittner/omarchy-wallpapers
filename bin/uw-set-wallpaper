@@ -1,0 +1,120 @@
+#!/bin/bash
+# Download an Unsplash photo and make it the current Omarchy background.
+#
+# The image is saved into the user background directory for the active theme
+# (~/.config/omarchy/backgrounds/<theme>/) so it also joins the rotation that
+# `omarchy theme bg next` walks, then handed to omarchy-theme-bg-set.
+#
+#   uw-set-wallpaper --id <id> --url <raw-url> [--width N] [--author NAME]
+#                    [--link URL] [--download-location URL] [--key CLIENT_ID]
+#                    [--keep N]
+
+set -euo pipefail
+
+id=""
+url=""
+width="2560"
+author=""
+author_username=""
+link=""
+download_location=""
+access_key=""
+keep="10"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+  --id) id="${2-}"; shift 2 ;;
+  --url) url="${2-}"; shift 2 ;;
+  --width) width="${2-}"; shift 2 ;;
+  --author) author="${2-}"; shift 2 ;;
+  --author-username) author_username="${2-}"; shift 2 ;;
+  --link) link="${2-}"; shift 2 ;;
+  --download-location) download_location="${2-}"; shift 2 ;;
+  --key) access_key="${2-}"; shift 2 ;;
+  --keep) keep="${2-}"; shift 2 ;;
+  *)
+    echo "unknown argument: $1" >&2
+    exit 1
+    ;;
+  esac
+done
+
+[[ -n $id ]] || { echo "--id is required" >&2; exit 1; }
+[[ -n $url ]] || { echo "--url is required" >&2; exit 1; }
+
+notify() {
+  if command -v omarchy-notification-send >/dev/null 2>&1; then
+    omarchy-notification-send "$1" "${2-}" -t 3000
+  elif command -v notify-send >/dev/null 2>&1; then
+    notify-send "$1" "${2-}"
+  fi
+}
+
+theme="$(cat "$HOME/.local/state/omarchy/current/theme.name" 2>/dev/null || echo default)"
+dest_dir="$HOME/.config/omarchy/backgrounds/$theme"
+dest="$dest_dir/unsplash-$id.jpg"
+mkdir -p "$dest_dir"
+
+# Re-setting a photo that is already downloaded skips the transfer entirely.
+if [[ ! -s $dest ]]; then
+  tmp="$(mktemp "${dest}.XXXXXX")"
+  trap 'rm -f "$tmp"' EXIT
+
+  if ! curl -fsSL --max-time 60 -o "$tmp" "$url"; then
+    notify "Unsplash" "Download failed"
+    exit 1
+  fi
+
+  # A truncated or HTML error body would be accepted as a background and
+  # render as a black screen, so verify it actually decodes as an image.
+  if command -v identify >/dev/null 2>&1; then
+    if ! identify "$tmp" >/dev/null 2>&1; then
+      notify "Unsplash" "Downloaded file is not a usable image"
+      exit 1
+    fi
+  fi
+
+  mv "$tmp" "$dest"
+  trap - EXIT
+fi
+
+omarchy-theme-bg-set "$dest"
+
+# Unsplash's API guidelines require pinging the download endpoint whenever a
+# photo is actually used. It is best-effort and never blocks the wallpaper.
+if [[ -n $download_location && -n $access_key ]]; then
+  curl -fsS --max-time 8 -H "Authorization: Client-ID $access_key" \
+    "$download_location" >/dev/null 2>&1 &
+fi
+
+# Attribution for the currently applied photo, so the panel can show it after
+# a restart and other scripts can read it.
+state_file="$HOME/.local/state/omarchy/settings/unsplash-current.json"
+mkdir -p "$(dirname "$state_file")"
+jq -n \
+  --arg id "$id" \
+  --arg author "$author" \
+  --arg username "$author_username" \
+  --arg link "$link" \
+  --arg path "$dest" \
+  '{id: $id, author: $author, username: $username, link: $link, path: $path}' \
+  >"$state_file"
+
+# Keep the newest N downloads and drop older ones. Only files this script
+# created (unsplash-*.jpg in this theme's user background dir) are considered,
+# and the active background is never removed.
+if [[ $keep =~ ^[0-9]+$ ]] && ((keep > 0)); then
+  mapfile -t old < <(
+    find "$dest_dir" -maxdepth 1 -type f -name 'unsplash-*.jpg' -printf '%T@ %p\n' 2>/dev/null |
+      sort -rn | tail -n "+$((keep + 1))" | cut -d' ' -f2-
+  )
+  for file in "${old[@]}"; do
+    [[ -n $file && $file != "$dest" ]] && rm -f -- "$file"
+  done
+fi
+
+if [[ -n $author ]]; then
+  notify "Wallpaper set" "Photo by $author on Unsplash"
+else
+  notify "Wallpaper set" "From Unsplash"
+fi
