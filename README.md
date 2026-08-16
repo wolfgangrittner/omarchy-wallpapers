@@ -22,12 +22,40 @@ Requires Omarchy 4 (Quickshell-based shell).
 omarchy plugin add git@gitlab.com:wolfgangrittner/omarchy-unsplash-wallpapers.git --enable --yes
 ```
 
-Then open the panel (icon, top right) and paste an Unsplash **Access Key** into
-settings (⚙). Get one free at <https://unsplash.com/oauth/applications>; a demo
-app allows 50 requests/hour, which is ample — browsing is free, collection lists
-cache for 30 minutes, and each new photo is one request.
+Then add an access key (below).
 
 Uninstall: `omarchy plugin remove wr.unsplash-wallpapers`
+
+## Access key
+
+The API needs a free key of your own — there is no unauthenticated endpoint.
+
+1. Go to <https://unsplash.com/oauth/applications> and sign in, creating an
+   Unsplash account if you need one.
+2. **New Application**. Accept the API terms and guidelines, then give it any
+   name and description — the key is yours, nothing is reviewed or published.
+3. Copy the **Access Key** from the application page. *Not* the Secret key —
+   this app never needs it.
+4. In the panel, open settings (⚙), paste it in, press **Save**.
+
+New applications run in **Demo** mode: 50 requests an hour. Only calls to
+`api.unsplash.com` count; the photos themselves come from `images.unsplash.com`
+and are free.
+
+| Action | Requests |
+|---|---|
+| Curated grid discovery | 6, once ever — cached in config |
+| New photo | 1 |
+| Set as wallpaper | 1 — the download ping the guidelines require |
+| Collection search | 1 — the default browse list caches for 30 minutes |
+
+A draw-and-set cycle is 2, so roughly 25 wallpaper changes an hour. If you do
+spend the hour, the panel says so and leaves the desktop alone: your wallpaper,
+History, and re-applying an old photo keep working, because those come from the
+image CDN. Only new draws and searches wait for the reset.
+
+**Apply for Production** in the same dashboard raises the limit to 1,000/hour;
+nothing here needs to change.
 
 ## Panes
 
