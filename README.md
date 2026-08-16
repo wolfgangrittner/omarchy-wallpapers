@@ -19,7 +19,7 @@ Requires Omarchy 4 (Quickshell-based shell).
 ## Install
 
 ```bash
-omarchy plugin add git@gitlab.com:wolfgangrittner/omarchy-unsplash-wallpapers.git --enable --yes
+omarchy plugin add https://github.com/wolfgangrittner/omarchy-wallpapers.git --enable --yes
 ```
 
 Then add an access key (below).
