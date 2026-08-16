@@ -59,11 +59,10 @@ nothing here needs to change.
 
 ## Panes
 
-| Pane | |
-|---|---|
-| **Home** | The photo on show. Click it (or the ⟳ over it) to draw another. **Set as wallpaper** applies it and closes the panel. |
-| **Collections** | A 3×2 grid of six curated collections — Wallpapers, Nature, Architecture, Space, Beach, Black & White — plus search for any other public collection. Tick any mix. **Wallpapers** is selected out of the box; untick everything to draw from all of Unsplash. |
-| **History** | Every photo shown, applied or not. Click one to set it. |
+| Home | Collections | History |
+|---|---|---|
+| [![Home](screenshots/home.jpg)](screenshots/home.jpg) | [![Collections](screenshots/collections.jpg)](screenshots/collections.jpg) | [![History](screenshots/history.jpg)](screenshots/history.jpg) |
+| The photo on show. Click it — or the ⟳ over it — to draw another; **Set as wallpaper** applies it and closes the panel. | Six curated collections in a 3×2 grid, plus search for any other public collection. Tick any mix; **Wallpapers** is on out of the box, and unticking everything draws from all of Unsplash. | Every photo shown, applied or not. Click one to set it again. |
 
 ## Mouse
 
