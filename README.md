@@ -46,7 +46,7 @@ The key is stored in `~/.local/state/omarchy/settings/unsplash.json` with mode
 | Left-click the bar icon | Open/close the panel |
 | Right-click the bar icon | Open the panel and draw a new photo |
 | Click the photo | Draw another one — the wallpaper is untouched |
-| **Set as wallpaper** | Apply the photo on show (greyed out when it is already your wallpaper) |
+| **Set as wallpaper** | Apply the photo on show and close the panel (greyed out when it is already your wallpaper) |
 | **Open ↗** or the credit line | Open the photo on unsplash.com |
 | Click a collection | Select/deselect it as a source |
 | Click a history thumbnail | Set it as the wallpaper and close the panel |
@@ -59,7 +59,7 @@ Keyboard, while the panel is open:
 | `1` `2` `3` | Home / Collections / History |
 | `n` | Draw a new photo |
 | Arrows / `hjkl` | Move the cursor in the collection list or history grid |
-| `Enter` / `Space` | Home: apply · Collections: toggle · History: apply and close |
+| `Enter` / `Space` | Apply and close (Collections: toggle the selection) |
 | `/` | Search collections |
 | `r` | Reload the collection list |
 | `o` | Open the photo on unsplash.com |

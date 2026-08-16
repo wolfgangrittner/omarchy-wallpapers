@@ -169,9 +169,10 @@ Panel {
     pane = "home"
   }
 
-  // History is a one-click path back to a photo: apply it and get out of the
-  // way. The hero follows along so reopening the panel shows what was set.
-  function applyFromHistory(photo) {
+  // Applying is always the last thing you want from the panel, so it gets out
+  // of the way afterwards. The hero is pinned to what was applied first, so
+  // reopening shows the wallpaper that is now on the desktop.
+  function applyAndClose(photo) {
     if (!photo) return
     previewPhoto = photo
     applyPhoto(photo)
@@ -263,12 +264,12 @@ Panel {
 
   function activateCursor() {
     if (pane === "history" && history.length > 0) {
-      applyFromHistory(history[Math.max(0, Math.min(historyIndex, history.length - 1))])
+      applyAndClose(history[Math.max(0, Math.min(historyIndex, history.length - 1))])
     } else if (pane === "collections" && collections.length > 0) {
       toggleCollection(collections[Math.max(0, Math.min(collectionIndex, collections.length - 1))])
     } else if (pane === "home") {
       // Enter applies what is on show; `n` draws another.
-      if (heroPhoto && !heroIsApplied) applyPhoto(heroPhoto)
+      if (canSet) applyAndClose(heroPhoto)
     }
   }
 
@@ -380,7 +381,7 @@ Panel {
     function shuffle(): string { root.newPhoto(); return "ok" }
     function set(): string {
       if (!root.heroPhoto) return "nothing on show"
-      root.applyPhoto(root.heroPhoto)
+      root.applyAndClose(root.heroPhoto)
       return "ok"
     }
 
@@ -841,7 +842,7 @@ Panel {
                 fontFamily: root.fontFamily
                 fontSize: Style.font.caption
                 verticalPadding: Style.spacing.md
-                onClicked: root.applyPhoto(root.heroPhoto)
+                onClicked: root.applyAndClose(root.heroPhoto)
               }
 
               Button {
@@ -1207,7 +1208,7 @@ Panel {
                     }
                     onClicked: function(mouse) {
                       if (mouse.button === Qt.RightButton) root.openUrl(historyCell.modelData.htmlLink)
-                      else root.applyFromHistory(historyCell.modelData)
+                      else root.applyAndClose(historyCell.modelData)
                     }
                   }
                 }
