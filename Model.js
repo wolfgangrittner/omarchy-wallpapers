@@ -2,19 +2,63 @@
 // response normalization, and config parsing. No QML types are touched here
 // so every function stays trivially testable with plain JS.
 
-var BASE = "https://api.unsplash.com"
-
 // Attribution parameters Unsplash's API guidelines require on every link
 // back to a photo or photographer profile.
 var UTM = "utm_source=omarchy_wallpapers&utm_medium=referral"
 
+// --------------------------------------------------------- trusted origins
+//
+// Ids and URLs below this line arrive inside a response body, so they are only
+// as trustworthy as the API, DNS, and any proxy in between. An id ends up in a
+// filename, a URL ends up in a download or in front of xdg-open, so each is
+// checked here — where responses are normalized — and again in bin/ow-lib.sh,
+// since the scripts can be run on their own.
+
+var IMAGE_HOSTS = ["images.unsplash.com", "plus.unsplash.com"]
+var LINK_HOSTS = ["unsplash.com", "www.unsplash.com"]
+var API_HOST = "api.unsplash.com"
+
+// The host of an https URL, or "" if it is anything this plugin should not be
+// handling. Userinfo and ports are rejected rather than parsed off, because
+// "https://images.unsplash.com@evil.example/x" is exactly the shape a host
+// check is expected to miss.
+function hostOf(url) {
+  var u = String(url || "")
+  if (u === "" || /[\s"'\\<>]/.test(u)) return ""
+  var m = /^https:\/\/([^/?#]+)/.exec(u)
+  if (!m) return ""
+  var host = m[1]
+  if (host.indexOf("@") >= 0 || host.indexOf(":") >= 0) return ""
+  return host.toLowerCase()
+}
+
+function hostAllowed(url, hosts) {
+  var host = hostOf(url)
+  return host !== "" && hosts.indexOf(host) >= 0
+}
+
+// Each returns the value only when it is usable, so a rejected URL degrades to
+// a missing thumbnail or a dead link rather than a bad request.
+function imageUrl(url) { return hostAllowed(url, IMAGE_HOSTS) ? String(url) : "" }
+function linkUrl(url) { return hostAllowed(url, LINK_HOSTS) ? String(url) : "" }
+function apiUrl(url) { return hostAllowed(url, [API_HOST]) ? String(url) : "" }
+
+// Photo ids become "unsplash-<id>.jpg" on disk; collection ids are pasted into
+// a query string. Both are restricted to the alphabet Unsplash actually uses.
+function photoId(id) {
+  return /^[A-Za-z0-9_-]{1,128}$/.test(String(id || "")) ? String(id) : ""
+}
+
 // ------------------------------------------------------------------ endpoints
+//
+// These build a path, not a full URL: bin/ow-api owns the host, so the request
+// that carries the access key cannot be pointed anywhere else from up here.
 
 // One random photo, drawn from the selected collections when there are any.
 // This is the whole engine behind "New photo": a single request per photo,
 // matching how Unsplash's own desktop app works.
 function randomEndpoint(collectionIds, orientation) {
-  var url = BASE + "/photos/random?count=1"
+  var url = "/photos/random?count=1"
   if (orientation) url += "&orientation=" + encodeURIComponent(orientation)
 
   var ids = collectionIdList(collectionIds)
@@ -70,13 +114,17 @@ function labelCurated(entries) {
   for (var t = 0; t < terms.length; t++) {
     var found = byTerm[terms[t].term]
     if (!found || !found.id) continue
+    // Runs over both a fresh ow-curated result and the copy cached in the
+    // config, so a hand-edited config gets the same treatment as a response.
+    var cid = photoId(found.id)
+    if (cid === "") continue
     out.push({
-      id: String(found.id),
+      id: cid,
       term: terms[t].term,
       label: terms[t].label,
       title: String(found.title || terms[t].label),
       totalPhotos: parseInt(found.totalPhotos, 10) || 0,
-      coverUrl: String(found.coverUrl || ""),
+      coverUrl: imageUrl(found.coverUrl),
       coverColor: String(found.coverColor || "#1b1b1b"),
       curator: String(found.curator || "")
     })
@@ -98,9 +146,9 @@ function collectionsEndpoint(query, perPage) {
   var per = Math.max(1, parseInt(perPage, 10) || 20)
   var q = String(query || "").replace(/^\s+|\s+$/g, "")
   if (q !== "") {
-    return BASE + "/search/collections?query=" + encodeURIComponent(q) + "&per_page=" + per
+    return "/search/collections?query=" + encodeURIComponent(q) + "&per_page=" + per
   }
-  return BASE + "/collections?per_page=" + per
+  return "/collections?per_page=" + per
 }
 
 function collectionIdList(collections) {
@@ -108,7 +156,7 @@ function collectionIdList(collections) {
   var list = collections instanceof Array ? collections : []
   for (var i = 0; i < list.length; i++) {
     var id = typeof list[i] === "string" ? list[i] : (list[i] ? list[i].id : "")
-    id = String(id || "").replace(/^\s+|\s+$/g, "")
+    id = photoId(String(id || "").replace(/^\s+|\s+$/g, ""))
     if (id !== "") ids.push(id)
   }
   return ids.join(",")
@@ -147,13 +195,17 @@ function normalizePhotos(body) {
   for (var i = 0; i < list.length; i++) {
     var p = list[i]
     if (!p || !p.urls) continue
+    // A photo whose id would not survive becoming a filename is dropped here
+    // rather than half-working its way down to ow-set-wallpaper.
+    var pid = photoId(p.id)
+    if (pid === "") continue
     out.push({
-      id: String(p.id || ""),
-      previewUrl: String(p.urls.regular || p.urls.small || ""),
-      thumbUrl: String(p.urls.small || p.urls.thumb || ""),
-      rawUrl: String(p.urls.raw || p.urls.full || ""),
-      htmlLink: p.links ? String(p.links.html || "") : "",
-      downloadLocation: p.links ? String(p.links.download_location || "") : "",
+      id: pid,
+      previewUrl: imageUrl(p.urls.regular || p.urls.small),
+      thumbUrl: imageUrl(p.urls.small || p.urls.thumb),
+      rawUrl: imageUrl(p.urls.raw || p.urls.full),
+      htmlLink: p.links ? linkUrl(p.links.html) : "",
+      downloadLocation: p.links ? apiUrl(p.links.download_location) : "",
       authorName: p.user ? String(p.user.name || "") : "",
       authorUsername: p.user ? String(p.user.username || "") : "",
       description: String(p.alt_description || p.description || ""),
@@ -183,6 +235,8 @@ function normalizeCollections(body, minPhotos) {
   for (var i = 0; i < list.length; i++) {
     var c = list[i]
     if (!c || !c.id) continue
+    var cid = photoId(c.id)
+    if (cid === "") continue
     // Only photos a free key can fetch: an Unsplash+ collection reports a
     // big total_photos but /photos/random returns 404 for it.
     var free = Math.max(0, (parseInt(c.total_photos, 10) || 0) - (parseInt(c.total_plus, 10) || 0))
@@ -191,11 +245,11 @@ function normalizeCollections(body, minPhotos) {
     out.push({
       // Collection ids are not always numeric ("WV3nU0MXUMw"), so they stay
       // strings everywhere — including in the saved config.
-      id: String(c.id),
+      id: cid,
       title: String(c.title || "Untitled"),
       description: String(c.description || ""),
       totalPhotos: free,
-      coverUrl: (c.cover_photo && c.cover_photo.urls) ? String(c.cover_photo.urls.small || "") : "",
+      coverUrl: (c.cover_photo && c.cover_photo.urls) ? imageUrl(c.cover_photo.urls.small) : "",
       coverColor: (c.cover_photo && c.cover_photo.color) ? String(c.cover_photo.color) : "#1b1b1b",
       curator: (c.user && c.user.name) ? String(c.user.name) : ""
     })
@@ -236,8 +290,11 @@ function randomErrorFor(status, body, hasCollections) {
 
 // -------------------------------------------------------------------- links
 
+// Returns "" for anything that is not an unsplash.com link. Callers hand the
+// result to xdg-open, which will launch whatever handler a scheme is
+// registered to, so a link out of a response body does not get to choose one.
 function withUtm(url) {
-  var u = String(url || "")
+  var u = linkUrl(url)
   if (u === "") return ""
   return u + (u.indexOf("?") >= 0 ? "&" : "?") + UTM
 }
@@ -246,7 +303,7 @@ function withUtm(url) {
 // always appended. fit=max keeps the full composition and only bounds the
 // long edge — the background renderer does the cropping.
 function wallpaperUrl(rawUrl, width) {
-  var u = String(rawUrl || "")
+  var u = imageUrl(rawUrl)
   if (u === "") return ""
   var w = Math.max(640, parseInt(width, 10) || 2560)
   return u + (u.indexOf("?") >= 0 ? "&" : "?") + "w=" + w + "&q=85&fm=jpg&fit=max"
@@ -274,9 +331,11 @@ function attributionText(photo) {
 // no network — and fall back to the CDN preview once pruning removes it.
 function heroSource(photo) {
   if (!photo) return ""
+  // Only a plain absolute path becomes a file:// source; anything else falls
+  // back to the preview URL, which has already been origin-checked.
   var path = String(photo.path || "")
-  if (path !== "") return "file://" + path
-  return String(photo.previewUrl || "")
+  if (/^\/[^\0"'\s]/.test(path)) return "file://" + path
+  return imageUrl(photo.previewUrl)
 }
 
 // -------------------------------------------------------------------- config
@@ -380,14 +439,18 @@ function parseHistory(raw) {
   for (var i = 0; i < data.length; i++) {
     var entry = data[i]
     if (!entry || !entry.id) continue
+    // History rows get re-applied and re-opened, so a row is re-checked on the
+    // way out of the file, not trusted for having been written locally.
+    var hid = photoId(entry.id)
+    if (hid === "") continue
     out.push({
-      id: String(entry.id),
+      id: hid,
       authorName: String(entry.author || ""),
       authorUsername: String(entry.username || ""),
-      htmlLink: String(entry.link || ""),
+      htmlLink: linkUrl(entry.link),
       path: String(entry.path || ""),
-      previewUrl: String(entry.preview || ""),
-      rawUrl: String(entry.raw || ""),
+      previewUrl: imageUrl(entry.preview),
+      rawUrl: imageUrl(entry.raw),
       appliedAt: String(entry.appliedAt || ""),
       color: "#1b1b1b"
     })

@@ -6,9 +6,13 @@
 #
 #   ow-config get                print the whole config as JSON
 #   ow-config set <key> <val>    set one key (numeric values stay numeric)
+#   ow-config setstdin <key>     set one string key, reading the value on stdin
 #   ow-config setjson <key> <j>  set one key to a raw JSON value (arrays etc.)
 #   ow-config unset <key>...     remove keys
 #   ow-config path               print the config path
+#
+# The access key is written with `setstdin`: an argument would be visible in
+# /proc/<pid>/cmdline to every process on the machine for as long as this runs.
 
 set -euo pipefail
 
@@ -65,6 +69,20 @@ set)
   commit_config "$tmp"
   ;;
 
+setstdin)
+  key="${2:?usage: ow-config setstdin <key> (value on stdin)}"
+  ensure_config
+
+  # One line, no trailing newline, always a JSON string — this is the path a
+  # secret takes, so it does not get the numeric-coercion treatment `set` has.
+  IFS= read -r value || true
+  value="${value%$'\r'}"
+
+  tmp="$(mktemp "${CONFIG}.XXXXXX")"
+  jq --arg k "$key" --arg v "$value" '.[$k] = $v' "$CONFIG" >"$tmp"
+  commit_config "$tmp"
+  ;;
+
 setjson)
   key="${2:?usage: ow-config setjson <key> <json>}"
   value="${3-}"
@@ -95,7 +113,7 @@ unset)
   ;;
 
 *)
-  echo "usage: ow-config [get|set <key> <value>|setjson <key> <json>|unset <key>...|path]" >&2
+  echo "usage: ow-config [get|set <key> <value>|setstdin <key>|setjson <key> <json>|unset <key>...|path]" >&2
   exit 1
   ;;
 esac

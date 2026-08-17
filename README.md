@@ -105,7 +105,7 @@ nothing here needs to change.
 
 ## Config
 
-`bin/ow-config set <key> <value>` · `unset <key>...` · `get`
+`bin/ow-config set <key> <value>` · `setstdin <key>` · `unset <key>...` · `get`
 
 | Key | Default | |
 |---|---|---|
@@ -162,11 +162,32 @@ Panel.qml              bar button + three-pane popup
 CuratedCell.qml        one tile in the curated grid
 SourceRow.qml          one row in the search/browse list
 Model.js               endpoints, parsing, config, grid math
+bin/ow-api             authenticated Unsplash requests
+bin/ow-lib.sh          shared checks on ids and URLs
 bin/ow-config          read/write config
 bin/ow-curated         resolve the six curated collections
 bin/ow-history         record photos shown
 bin/ow-set-wallpaper   download, apply, prune
 ```
+
+## Handling the access key and remote input
+
+The access key is never passed as a command-line argument, because
+`/proc/<pid>/cmdline` is world-readable and would expose it to every process on
+the machine for the life of the request. `bin/ow-api` reads the key from the
+config itself and hands it to curl in a config file on stdin; the panel calls
+`ow-api` with only a request path, so no caller can aim a credentialed request
+at another host. Saving the key from ⚙ goes over stdin too
+(`ow-config setstdin`). Redirects are never followed on a request carrying the
+key, so a 302 cannot replay it elsewhere.
+
+Ids and URLs in an API response are treated as untrusted: a photo id has to
+match `[A-Za-z0-9_-]{1,128}` before it becomes a filename, image downloads must
+be https from `images.unsplash.com` or `plus.unsplash.com`, the download ping
+must be `api.unsplash.com`, and anything handed to `xdg-open` must be
+`unsplash.com`. The rules live in `Model.js` for the panel and `bin/ow-lib.sh`
+for the scripts, so each holds even when a script is run on its own. History
+rows are re-checked when read back, not trusted for having come off local disk.
 
 ## IPC
 

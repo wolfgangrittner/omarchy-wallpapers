@@ -188,9 +188,14 @@ Panel {
     configProc.running = true
   }
 
+  // withUtm() returns "" for anything that is not an unsplash.com link, so a
+  // link that came out of a response body cannot pick the handler xdg-open
+  // launches.
   function openUrl(url) {
     if (!url) return
-    Util.execDetached("xdg-open " + Util.shellQuote(Model.withUtm(url)))
+    var target = Model.withUtm(url)
+    if (target === "") return
+    Util.execDetached("xdg-open " + Util.shellQuote(target))
   }
 
   // ------------------------------------------------------------- new photo
@@ -202,9 +207,10 @@ Panel {
     if (!configured || drawing) return
     drawing = true
     errorText = ""
-    randomProc.command = ["curl", "-sS", "--max-time", "15",
-      "-H", "Authorization: Client-ID " + accessKey,
-      "-w", "\n__HTTP__%{http_code}",
+    // bin/ow-api reads the key from the config and passes it to curl through a
+    // config file on stdin. The key never reaches an argument vector, so `ps`
+    // shows only the request path.
+    randomProc.command = [pluginBin("ow-api"),
       Model.randomEndpoint(selectedCollections, orientation)]
     randomProc.running = true
   }
@@ -247,7 +253,6 @@ Panel {
       "--author-username", String(photo.authorUsername || ""),
       "--link", String(photo.htmlLink || ""),
       "--download-location", String(photo.downloadLocation || ""),
-      "--key", accessKey,
       "--keep", String(parseInt(config.keep, 10) || 10)]
     setProc.running = true
   }
@@ -260,9 +265,7 @@ Panel {
 
     loadingCollections = true
     errorText = ""
-    collectionsProc.command = ["curl", "-sS", "--max-time", "15",
-      "-H", "Authorization: Client-ID " + accessKey,
-      "-w", "\n__HTTP__%{http_code}",
+    collectionsProc.command = [pluginBin("ow-api"),
       Model.collectionsEndpoint(collectionQuery, perPage)]
     collectionsProc.running = true
   }
@@ -283,8 +286,7 @@ Panel {
   function discoverCurated() {
     if (!configured || curatedRequested || curated.length > 0) return
     curatedRequested = true
-    curatedProc.command = [pluginBin("ow-curated"), "--key", accessKey]
-      .concat(Model.curatedTermArgs())
+    curatedProc.command = [pluginBin("ow-curated")].concat(Model.curatedTermArgs())
     curatedProc.running = true
   }
 
@@ -315,11 +317,24 @@ Panel {
     saveConfig("orientation", next)
   }
 
+  // The key goes to ow-config on stdin rather than as an argument: an argument
+  // would be readable in /proc/<pid>/cmdline by anything running on the machine
+  // for as long as the write took.
   function saveAccessKey() {
     var value = keyField.text.replace(/^\s+|\s+$/g, "")
     if (value === "") return
+    // A second Save while the first is still writing would be ignored on
+    // `running`, but its write() would land on a stdin that has already been
+    // closed — the key would silently never reach disk.
+    if (keyProc.running) return
     config = Object.assign({}, config, { accessKey: value })
-    saveConfig("accessKey", value)
+
+    keyProc.command = [pluginBin("ow-config"), "setstdin", "accessKey"]
+    keyProc.stdinEnabled = true
+    keyProc.running = true
+    keyProc.write(value + "\n")
+    keyProc.stdinEnabled = false
+
     setupOpen = false
     errorText = ""
     Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
@@ -483,6 +498,15 @@ Panel {
   }
 
   Process { id: historyProc }
+
+  // Separate from configProc's queue: this one carries the access key on stdin
+  // and must not be collapsed with, or delayed behind, ordinary settings.
+  Process {
+    id: keyProc
+    onExited: function(exitCode) {
+      if (exitCode !== 0) root.errorText = "Could not save the access key."
+    }
+  }
 
   IpcHandler {
     target: root.ipcTarget

@@ -6,14 +6,21 @@
 # `omarchy theme bg next` walks, then handed to omarchy-theme-bg-set.
 #
 #   ow-set-wallpaper --id <id> --url <sized-url> [--width N] [--author NAME]
-#                    [--link URL] [--download-location URL] [--key CLIENT_ID]
+#                    [--link URL] [--download-location URL]
 #                    [--keep N] [--preview URL] [--raw-url URL]
 #
 # --preview and --raw-url are recorded but never downloaded here: the panel
 # uses them to render history entries whose local file has been pruned, and to
 # re-apply them without another API lookup.
+#
+# Every id and URL here was read out of an API response, so each is checked
+# against ow-lib's rules before it reaches a path or a transfer. The access key
+# is not an argument at all — the download ping goes through ow-api.
 
 set -euo pipefail
+
+OW_BIN="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+. "$OW_BIN/ow-lib.sh"
 
 id=""
 url=""
@@ -22,7 +29,6 @@ author=""
 author_username=""
 link=""
 download_location=""
-access_key=""
 keep="10"
 preview=""
 raw_url=""
@@ -36,7 +42,6 @@ while [[ $# -gt 0 ]]; do
   --author-username) author_username="${2-}"; shift 2 ;;
   --link) link="${2-}"; shift 2 ;;
   --download-location) download_location="${2-}"; shift 2 ;;
-  --key) access_key="${2-}"; shift 2 ;;
   --keep) keep="${2-}"; shift 2 ;;
   --preview) preview="${2-}"; shift 2 ;;
   --raw-url) raw_url="${2-}"; shift 2 ;;
@@ -50,6 +55,17 @@ done
 [[ -n $id ]] || { echo "--id is required" >&2; exit 1; }
 [[ -n $url ]] || { echo "--url is required" >&2; exit 1; }
 
+# The id becomes a filename below; the URL becomes a download. Neither is
+# recoverable from, so these two fail the run rather than being dropped.
+ow_valid_id "$id" || { echo "refusing an unexpected photo id: $id" >&2; exit 1; }
+ow_valid_image_url "$url" ||
+  { echo "refusing to download from outside Unsplash: $url" >&2; exit 1; }
+
+# Recorded-only fields: an unusable one costs a thumbnail, not the wallpaper.
+preview="$(ow_image_url_or_empty "$preview")"
+raw_url="$(ow_image_url_or_empty "$raw_url")"
+link="$(ow_link_url_or_empty "$link")"
+
 notify() {
   if command -v omarchy-notification-send >/dev/null 2>&1; then
     omarchy-notification-send "$1" "${2-}" -t 3000
@@ -59,6 +75,12 @@ notify() {
 }
 
 theme="$(cat "$HOME/.local/state/omarchy/current/theme.name" 2>/dev/null || echo default)"
+# The id is checked above, but the theme name is the other half of this path.
+# It is local state rather than a response field, so this is a backstop, not a
+# trust boundary — it just keeps a stray newline or "../" in that file from
+# steering the download out of the backgrounds directory.
+theme="${theme%%$'\n'*}"
+[[ -n $theme && $theme != *[/]* && $theme != .* ]] || theme="default"
 dest_dir="$HOME/.config/omarchy/backgrounds/$theme"
 dest="$dest_dir/unsplash-$id.jpg"
 mkdir -p "$dest_dir"
@@ -68,7 +90,11 @@ if [[ ! -s $dest ]]; then
   tmp="$(mktemp "${dest}.XXXXXX")"
   trap 'rm -f "$tmp"' EXIT
 
-  if ! curl -fsSL --max-time 60 -o "$tmp" "$url"; then
+  # --proto/--proto-redir keep a redirect from walking off https, and off to a
+  # file:// or scp:// URL that curl would otherwise be happy to honour.
+  if ! curl -fsSL --max-time 60 \
+    --proto '=https' --proto-redir '=https' --max-redirs 3 \
+    -o "$tmp" -- "$url"; then
     notify "Unsplash" "Download failed"
     exit 1
   fi
@@ -90,9 +116,13 @@ omarchy-theme-bg-set "$dest"
 
 # Unsplash's API guidelines require pinging the download endpoint whenever a
 # photo is actually used. It is best-effort and never blocks the wallpaper.
-if [[ -n $download_location && -n $access_key ]]; then
-  curl -fsS --max-time 8 -H "Authorization: Client-ID $access_key" \
-    "$download_location" >/dev/null 2>&1 &
+#
+# This is the one request here that carries the access key, and its target
+# comes out of the response body — so it only runs if that target really is the
+# Unsplash API, and it goes through ow-api, which supplies the key itself and
+# refuses to follow a redirect away with it.
+if [[ -n $download_location ]] && ow_valid_api_url "$download_location"; then
+  "$OW_BIN/ow-api" --body "${download_location#https://$OW_API_HOST}" >/dev/null 2>&1 &
 fi
 
 # Attribution for the currently applied photo, so the panel can show it after

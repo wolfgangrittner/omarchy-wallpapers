@@ -6,23 +6,26 @@
 # and cached in the config, so the grid follows Unsplash rather than a list
 # that silently rots.
 #
-#   ow-curated --key <access-key> [--min N] [term...]
+#   ow-curated [--min N] [term...]
 #
 # --min is the preferred floor of fetchable photos (default 50); if nothing
 # clears it, the largest usable match is taken anyway.
+#
+# The access key is not an argument: ow-api reads it from the config, so it
+# never lands in this script's process arguments.
 #
 # Prints: [{ term, id, title, totalPhotos, coverUrl, coverColor, curator }, …]
 # A term that matches nothing is skipped rather than failing the whole run.
 
 set -euo pipefail
 
-key=""
+OW_BIN="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
 min="50"
 terms=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-  --key) key="${2-}"; shift 2 ;;
   --min) min="${2-}"; shift 2 ;;
   *) terms+=("$1"); shift ;;
   esac
@@ -30,7 +33,6 @@ done
 
 [[ $min =~ ^[0-9]+$ ]] || min=50
 
-[[ -n $key ]] || { echo "ow-curated: --key is required" >&2; exit 1; }
 if [[ ${#terms[@]} -eq 0 ]]; then
   terms=(wallpapers nature architecture space beach "black & white")
 fi
@@ -40,9 +42,7 @@ out='[]'
 for term in "${terms[@]}"; do
   enc="$(jq -rn --arg t "$term" '$t|@uri')"
 
-  if ! resp="$(curl -sS --max-time 20 \
-    -H "Authorization: Client-ID $key" \
-    "https://api.unsplash.com/search/collections?query=$enc&per_page=10")"; then
+  if ! resp="$("$OW_BIN/ow-api" --body "/search/collections?query=$enc&per_page=10")"; then
     continue
   fi
 

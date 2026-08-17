@@ -1,0 +1,50 @@
+#!/bin/bash
+# Make an authenticated request to the Unsplash API.
+#
+#   ow-api <path>            body, then "\n__HTTP__<status>"
+#   ow-api --body <path>     body only; non-2xx is an error exit
+#
+# <path> is rooted at the API host ("/photos/random?count=1"), never a full
+# URL: this script decides where the request goes, so a caller cannot aim a
+# credentialed request at another host.
+#
+# The access key is read from the config and handed to curl through a config
+# file on stdin, so it never appears in the process arguments of this script or
+# of curl — `ps` on a shared machine would otherwise show it on every request.
+# Redirects are not followed for the same reason: a 302 would replay the
+# Authorization header to wherever it pointed.
+
+set -euo pipefail
+
+OW_BIN="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+. "$OW_BIN/ow-lib.sh"
+
+body_only=0
+if [[ ${1-} == "--body" ]]; then
+  body_only=1
+  shift
+fi
+
+path="${1-}"
+[[ -n $path ]] || { echo "ow-api: a request path is required" >&2; exit 2; }
+
+# Rooted, and not "//host/…" — which is a scheme-relative URL that would move
+# the request to another host once curl joins it to the base.
+[[ $path == /* && $path != //* ]] ||
+  { echo "ow-api: request path must start with a single /" >&2; exit 2; }
+[[ $path != *[[:space:][:cntrl:]]* ]] ||
+  { echo "ow-api: request path contains whitespace" >&2; exit 2; }
+
+key="$("$OW_BIN/ow-config" get | jq -r '.accessKey // ""')"
+[[ -n $key ]] || { echo "ow-api: no access key configured" >&2; exit 2; }
+ow_valid_key "$key" || { echo "ow-api: access key has an unexpected format" >&2; exit 2; }
+
+args=(--silent --show-error --max-time 20 --proto '=https' --no-location)
+if ((body_only)); then
+  args+=(--fail)
+else
+  args+=(--write-out '\n__HTTP__%{http_code}')
+fi
+
+printf 'header = "Authorization: Client-ID %s"\n' "$key" |
+  curl "${args[@]}" --config - -- "https://$OW_API_HOST$path"
